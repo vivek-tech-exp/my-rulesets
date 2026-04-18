@@ -221,6 +221,14 @@ fi
 
 process_repo() {
   local REPO="$1"
+  
+  # --- CHECKPOINT RESUMABILITY ---
+  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/*.log 2>/dev/null; then
+    info "[$REPO] Already processed in a previous run. Resuming..."
+    return 0
+  fi
+  # -------------------------------
+
   local SAFE_NAME="${REPO//\//_}"
   local TMP_ERR="$STATE_DIR/err_${SAFE_NAME}.log"
   
@@ -342,7 +350,15 @@ process_repo() {
 
 echo "----------------------------------------"
 job_count=0
+repo_counter=0
+
 for REPO in "${REPOS[@]}"; do
+  # Check rate limit every 10 repositories to minimize overhead
+  if (( repo_counter % 10 == 0 )); then
+    check_rate_limit
+  fi
+  repo_counter=$((repo_counter + 1))
+
   if [[ "$PARALLEL" -eq 1 ]]; then
     process_repo "$REPO"
   else

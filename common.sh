@@ -68,10 +68,53 @@ check_auth() {
   fi
 }
 
+# --- State Management (Persistent & Isolated) ---
 setup_state_dir() {
-  # Global directory accessible by the importing script and its child jobs
-  STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gh_ruleset_state.XXXXXX")"
-  trap 'rm -rf "$STATE_DIR"' EXIT
+  local caller_script
+  caller_script="$(basename "$0" .sh)"
+  
+  # Creates isolated, persistent states: .gh_state_setup_github_rules_vivek-tech-exp
+  STATE_DIR="${PWD}/.gh_state_${caller_script}_${OWNER}"
+  mkdir -p "$STATE_DIR"
+  
+  # Ensure log files exist so grep doesn't fail later
+  touch "$STATE_DIR/created.log" "$STATE_DIR/updated.log" \
+        "$STATE_DIR/skipped.log" "$STATE_DIR/failed.log" \
+        "$STATE_DIR/deleted.log"
+        
+  info "State directory: $STATE_DIR"
+}
+
+# --- Rate Limit Protection (Graceful Exit) ---
+check_rate_limit() {
+  local rate_data
+  if ! rate_data="$(gh api /rate_limit 2>/dev/null)"; then
+    return 0 
+  fi
+
+  local remaining
+  local reset_time
+  remaining="$(echo "$rate_data" | jq -r '.resources.core.remaining')"
+  reset_time="$(echo "$rate_data" | jq -r '.resources.core.reset')"
+
+  if [[ "$remaining" -lt 50 ]]; then
+    echo "----------------------------------------"
+    warn "PRIMARY API RATE LIMIT EXHAUSTED ($remaining requests left)."
+    
+    # Calculate human-readable time for macOS/Linux compatibility
+    if date --version >/dev/null 2>&1; then
+      local reset_str="$(date -d "@$reset_time" '+%I:%M %p')"
+    else
+      local reset_str="$(date -r "$reset_time" '+%I:%M %p')"
+    fi
+
+    warn "GitHub will reset your quota at $reset_str."
+    warn "The script has safely saved its state to $STATE_DIR."
+    warn "Simply run the exact same command later to resume from where it left off."
+    echo "----------------------------------------"
+    
+    exit 429
+  fi
 }
 
 # --- GitHub API Helpers ---

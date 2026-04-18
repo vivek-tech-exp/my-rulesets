@@ -156,6 +156,14 @@ fi
 
 process_repo() {
   local REPO="$1"
+  
+  # --- CHECKPOINT RESUMABILITY ---
+  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/*.log 2>/dev/null; then
+    info "[$REPO] Already processed in a previous run. Resuming..."
+    return 0
+  fi
+  # -------------------------------
+
   local SAFE_NAME="${REPO//\//_}"
   local TMP_ERR="$STATE_DIR/err_${SAFE_NAME}.log"
   
@@ -207,7 +215,8 @@ process_repo() {
         if [[ "$ERR_MSG" == *"archived"* ]]; then
           warn "[$REPO] Skipped (Archived)"
           echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
-          break # The whole repo is read-only, stop trying to delete other IDs
+          # Break out of the ID loop since the whole repo is archived
+          break 
         else
           error "[$REPO] Failed to delete ruleset '$RULE_NAME': $ERR_MSG"
           REPO_FAILED=true
@@ -229,7 +238,15 @@ process_repo() {
 
 echo "----------------------------------------"
 job_count=0
+repo_counter=0
+
 for REPO in "${REPOS[@]}"; do
+  # Check rate limit every 10 repositories to minimize overhead
+  if (( repo_counter % 10 == 0 )); then
+    check_rate_limit
+  fi
+  repo_counter=$((repo_counter + 1))
+
   if [[ "$PARALLEL" -eq 1 ]]; then
     process_repo "$REPO"
   else
