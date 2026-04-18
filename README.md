@@ -25,6 +25,7 @@ Engineered for **safety**, **idempotency**, and **scalability**, featuring paral
 
 - 🔄 **Idempotent Updates**: Compares canonicalized live ruleset JSON against desired state to prevent unnecessary API calls and noisy audit logs.
 - 🔍 **Fleet Discovery**: Isolated `--audit` mode crawls the full policy matrix to instantly map organizational drift without requiring a specific config or making mutating API calls.
+- 📸 **Policy Onboarding**: Translate manual UI-created rulesets directly into portable JSON templates via `--capture-as`.
 - ⚡ **Concurrency**: Process multiple repositories simultaneously using the `--parallel` flag for massive speed improvements at scale.
 - 🎯 **Smart Targeting**: Dynamically targets the repository's native default branch (`~DEFAULT_BRANCH`) rather than hardcoding `main` or `master`.
 - 🕵️ **Bypass Actor Management**: Audit or intentionally wipe `bypass_actors` configuration across your repositories.
@@ -81,7 +82,16 @@ This toolset separates policy definitions from execution logic:
 ./setup_github_rules.sh --audit --all --visibility public --parallel 5
 ```
 
-### 3. Deleting Rulesets
+### 3. Policy Onboarding (Capture Mode)
+```bash
+# Extract the first ruleset from 'my-repo', strip metadata, and save as a template
+./setup_github_rules.sh --capture-as "My Standard Rules" --repo my-repo
+
+# Then apply the captured template organization-wide
+./setup_github_rules.sh --config policies/captured/My_Standard_Rules.json --all
+```
+
+### 4. Deleting Rulesets
 ```bash
 # Extract the target ruleset name from the JSON config and safely simulate deleting it
 ./delete_github_rules.sh --config policies/team/moderate.json --all --dry-run
@@ -101,6 +111,7 @@ This toolset separates policy definitions from execution logic:
 |:---|:---|:---|
 | `--config <path>` | **[Required by setup]** Path to JSON policy file | - |
 | `--audit` | **[Fleet Discovery]** Check repos against all policies in `policies/` (replaces `--config`) | `false` |
+| `--capture-as <name>` | **[Policy Onboarding]** Fetch a ruleset, clean it, and save as JSON (replaces `--config`) | - |
 | `--all` | Apply to all matching repos | `true` |
 | `--repo <name>` | Apply to a single repository | - |
 | `--repos <a,b>` | Apply to comma-separated repositories | - |
