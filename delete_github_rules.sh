@@ -257,7 +257,7 @@ for REPO in "${REPOS[@]}"; do
     process_repo "$REPO" &
     pids+=($!)
     if [[ ${#pids[@]} -ge $PARALLEL ]]; then
-      for pid in "${pids[@]}"; do
+      for pid in "${pids[@]+"${pids[@]}"}"; do
         if ! wait "$pid"; then
           error "A background job (PID: $pid) crashed unexpectedly."
           record_state "failed" "System Crash (PID: $pid)"
@@ -268,7 +268,7 @@ for REPO in "${REPOS[@]}"; do
   fi
 done
 
-for pid in "${pids[@]}"; do 
+for pid in "${pids[@]+"${pids[@]}"}"; do 
   if ! wait "$pid"; then
     error "A background job (PID: $pid) crashed unexpectedly."
     record_state "failed" "System Crash (PID: $pid)"

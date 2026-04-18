@@ -163,7 +163,7 @@ with_retry() {
 # --- GitHub API Helpers ---
 get_repos() {
   if [[ "$MODE" == "selected" ]]; then
-    printf "%s\n" "${SELECTED_REPOS[@]}"
+    [[ ${#SELECTED_REPOS[@]} -gt 0 ]] && printf "%s\n" "${SELECTED_REPOS[@]}"
     return
   fi
 
@@ -181,5 +181,5 @@ get_repos() {
     args+=(--source)
   fi
 
-  gh "${args[@]}" --jq '.[].name'
+  gh "${args[@]+"${args[@]}"}" --jq '.[].name'
 }
