@@ -1,0 +1,25 @@
+name: Global Ruleset Sync
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'policies/**/*.json'
+
+jobs:
+  sync-rulesets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub CLI
+        run: echo "${{ secrets.GH_PAT }}" | gh auth login --with-token
+
+      - name: Make script executable
+        run: chmod +x ./setup_github_rules.sh
+
+      - name: Execute Global Sync
+        run: ./setup_github_rules.sh --config policies/org/strict.json --all --yes --quiet --parallel 2
