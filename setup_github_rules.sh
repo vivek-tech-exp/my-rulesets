@@ -13,6 +13,7 @@ CAPTURE_NAME=""
 DEBUG_DIFF=false
 ENFORCE_NO_BYPASS=false
 REMOVE_BYPASS=false
+FORCE_UPDATE=false
 
 usage() {
   cat <<EOF
@@ -39,6 +40,7 @@ Behavior:
   --capture-as <name>         Fetch ruleset from --repo, clean it, and save it as <name>.json
   --enforce-no-bypass         Fail if the existing ruleset has bypass actors configured
   --remove-bypass             Wipe existing bypass actors from the ruleset
+  --force                     Force update policy even if it already matches
   --dry-run                   Show actions without changing anything
   --debug-diff                Print canonical desired/live JSON when repo differs
   --yes                       Skip confirmation prompts
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
       CAPTURE_NAME="$2"
       shift 2
       ;;
+    --force) FORCE_UPDATE=true; shift ;;
     --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
@@ -413,10 +416,14 @@ process_repo() {
   DESIRED_CANONICAL="$(printf '%s' "$MERGED_PAYLOAD" | canonicalize_ruleset)"
   LIVE_CANONICAL="$(printf '%s' "$LIVE_JSON" | canonicalize_ruleset)"
 
-  if [[ "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" ]]; then
+  if [[ "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" && "$FORCE_UPDATE" == false ]]; then
     success "[$REPO] Already matches desired state"
     record_state "skipped" "$REPO"
   else
+    if [[ "$FORCE_UPDATE" == true && "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" ]]; then
+       info "[$REPO] State identical, but proceeding due to --force"
+    fi
+
     if [[ "$DEBUG_DIFF" == true ]]; then
       echo "--- [$REPO] desired canonical ---"
       printf '%s\n' "$DESIRED_CANONICAL"
@@ -434,7 +441,12 @@ process_repo() {
         -H "X-GitHub-Api-Version: 2022-11-28" \
         "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" \
         --input - <<<"$MERGED_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
-        success "[$REPO] Updated ruleset"
+        
+        if [[ "$FORCE_UPDATE" == true && "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" ]]; then
+          success "[$REPO] Force-synced policy from $RULESET_NAME"
+        else
+          success "[$REPO] Updated ruleset"
+        fi
         record_state "updated" "$REPO"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
