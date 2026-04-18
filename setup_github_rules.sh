@@ -1,54 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OWNER="vivek-tech-exp"
-RULESET_NAME="Protect Master"
+# Source the shared library dynamically based on script location
+source "$(dirname "$0")/common.sh"
 
-MODE="all"
-VISIBILITY="public"
-INCLUDE_FORKS=false
-INCLUDE_ARCHIVED=false
-DRY_RUN=false
+# Script-specific variables
+RULESET_NAME="Protect Master"
 DEBUG_DIFF=false
-YES=false
-QUIET=false
 ENFORCE_NO_BYPASS=false
 REMOVE_BYPASS=false
-
-SELECTED_REPOS=()
-TMP_ERR="$(mktemp "${TMPDIR:-/tmp}/gh_ruleset_err.XXXXXX")"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-cleanup() {
-  rm -f "$TMP_ERR"
-}
-trap cleanup EXIT
-
-info() {
-  [[ "$QUIET" == true ]] || echo -e "${BLUE}ℹ${NC} $*"
-}
-
-success() {
-  echo -e "${GREEN}✅${NC} $*"
-}
-
-warn() {
-  echo -e "${YELLOW}⚠${NC} $*"
-}
-
-error() {
-  echo -e "${RED}❌${NC} $*" >&2
-}
-
-section() {
-  echo -e "\n${BOLD}== $* ==${NC}"
-}
 
 usage() {
   cat <<EOF
@@ -77,32 +37,17 @@ Behavior:
 EOF
 }
 
-normalize_unicode_dashes() {
-  local arg="$1"
-  case "$arg" in
-    —*|–*)
-      error "Detected a Unicode dash in argument: $arg"
-      error "Use normal ASCII hyphens, e.g. --repo my-fi"
-      exit 1
-      ;;
-  esac
-}
-
 for raw_arg in "$@"; do
   normalize_unicode_dashes "$raw_arg"
 done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --all)
-      MODE="all"
-      shift
-      ;;
+    --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
       MODE="selected"
-      REPO_NAME="${2#*/}"
-      SELECTED_REPOS+=("$REPO_NAME")
+      SELECTED_REPOS+=("${2#*/}")
       shift 2
       ;;
     --repos)
@@ -126,48 +71,16 @@ while [[ $# -gt 0 ]]; do
       VISIBILITY="$2"
       shift 2
       ;;
-    --include-forks)
-      INCLUDE_FORKS=true
-      shift
-      ;;
-    --include-archived)
-      INCLUDE_ARCHIVED=true
-      shift
-      ;;
-    --enforce-no-bypass)
-      ENFORCE_NO_BYPASS=true
-      shift
-      ;;
-    --remove-bypass)
-      REMOVE_BYPASS=true
-      shift
-      ;;
-    --dry-run)
-      DRY_RUN=true
-      shift
-      ;;
-    --debug-diff)
-      DEBUG_DIFF=true
-      shift
-      ;;
-    --yes)
-      YES=true
-      shift
-      ;;
-    --quiet)
-      QUIET=true
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      error "Unknown option: $1"
-      echo
-      usage
-      exit 1
-      ;;
+    --include-forks) INCLUDE_FORKS=true; shift ;;
+    --include-archived) INCLUDE_ARCHIVED=true; shift ;;
+    --enforce-no-bypass) ENFORCE_NO_BYPASS=true; shift ;;
+    --remove-bypass) REMOVE_BYPASS=true; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --debug-diff) DEBUG_DIFF=true; shift ;;
+    --yes) YES=true; shift ;;
+    --quiet) QUIET=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) error "Unknown option: $1"; echo; usage; exit 1 ;;
   esac
 done
 
@@ -181,20 +94,11 @@ if [[ "$ENFORCE_NO_BYPASS" == true && "$REMOVE_BYPASS" == true ]]; then
   exit 1
 fi
 
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
-    error "Missing required command: $1"
-    exit 1
-  }
-}
-
+# Environment Setup
 require_cmd gh
 require_cmd jq
-
-if ! gh auth status >/dev/null 2>&1; then
-  error "GitHub CLI is not authenticated. Run: gh auth login"
-  exit 1
-fi
+check_auth
+setup_temp_file
 
 read -r -d '' BASE_PAYLOAD <<'EOF' || true
 {
@@ -259,35 +163,9 @@ canonicalize_ruleset() {
   '
 }
 
-get_repos() {
-  if [[ "$MODE" == "selected" ]]; then
-    printf "%s\n" "${SELECTED_REPOS[@]}"
-    return
-  fi
-
-  local args=(repo list "$OWNER" --limit 2000 --json name)
-
-  if [[ "$VISIBILITY" != "all" ]]; then
-    args+=(--visibility "$VISIBILITY")
-  fi
-
-  if [[ "$INCLUDE_ARCHIVED" == false ]]; then
-    args+=(--no-archived)
-  fi
-
-  if [[ "$INCLUDE_FORKS" == false ]]; then
-    args+=(--source)
-  fi
-
-  gh "${args[@]}" --jq '.[].name'
-}
-
 confirm_scope() {
   local repo_count="$1"
-
-  if [[ "$YES" == true || "$DRY_RUN" == true ]]; then
-    return 0
-  fi
+  if [[ "$YES" == true || "$DRY_RUN" == true ]]; then return 0; fi
 
   if [[ "$MODE" == "all" && "$repo_count" -gt 1 ]]; then
     warn "You are about to apply rulesets to multiple repositories ($repo_count)."
@@ -312,6 +190,7 @@ print_summary_header() {
   echo "Remove bypass: $REMOVE_BYPASS"
 }
 
+# Fetch Repositories
 REPOS=()
 while IFS= read -r repo_name; do
   [[ -n "$repo_name" ]] && REPOS+=("$repo_name")
@@ -478,27 +357,7 @@ echo "Updated: $UPDATED"
 echo "Skipped: $SKIPPED"
 echo "Failed:  $FAILED"
 
-if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then
-  echo
-  echo "Created repos:"
-  printf ' - %s\n' "${CREATED_REPOS[@]}"
-fi
-
-if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then
-  echo
-  echo "Updated repos:"
-  printf ' - %s\n' "${UPDATED_REPOS[@]}"
-fi
-
-if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then
-  echo
-  echo "Skipped repos:"
-  printf ' - %s\n' "${SKIPPED_REPOS[@]}"
-fi
-
-if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then
-  echo
-  echo "Failed repos:"
-  printf ' - %s\n' "${FAILED_REPOS[@]}"
-  exit 1
-fi
+if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]}")"; fi
+if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]}")"; fi
+if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then echo -e "\nSkipped repos:\n$(printf ' - %s\n' "${SKIPPED_REPOS[@]}")"; fi
+if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]}")"; exit 1; fi

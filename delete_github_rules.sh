@@ -1,51 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OWNER="vivek-tech-exp"
-TARGET_RULESET="all" # 'all' deletes everything; otherwise specify a name
+# Source the shared library dynamically based on script location
+source "$(dirname "$0")/common.sh"
 
-MODE="all"
-VISIBILITY="public"
-INCLUDE_FORKS=false
-INCLUDE_ARCHIVED=false
-DRY_RUN=false
-YES=false
-QUIET=false
-
-SELECTED_REPOS=()
-TMP_ERR="$(mktemp "${TMPDIR:-/tmp}/gh_ruleset_delete_err.XXXXXX")"
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-cleanup() {
-  rm -f "$TMP_ERR"
-}
-trap cleanup EXIT
-
-info() {
-  [[ "$QUIET" == true ]] || echo -e "${BLUE}ℹ${NC} $*"
-}
-
-success() {
-  echo -e "${GREEN}✅${NC} $*"
-}
-
-warn() {
-  echo -e "${YELLOW}⚠${NC} $*"
-}
-
-error() {
-  echo -e "${RED}❌${NC} $*" >&2
-}
-
-section() {
-  echo -e "\n${BOLD}== $* ==${NC}"
-}
+# Script-specific variables
+TARGET_RULESET="all"
 
 usage() {
   cat <<EOF
@@ -74,26 +34,13 @@ Behavior:
 EOF
 }
 
-normalize_unicode_dashes() {
-  local arg="$1"
-  case "$arg" in
-    —*|–*)
-      error "Detected a Unicode dash in argument: $arg"
-      exit 1
-      ;;
-  esac
-}
-
 for raw_arg in "$@"; do
   normalize_unicode_dashes "$raw_arg"
 done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --all)
-      MODE="all"
-      shift
-      ;;
+    --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
       MODE="selected"
@@ -126,83 +73,25 @@ while [[ $# -gt 0 ]]; do
       TARGET_RULESET="$2"
       shift 2
       ;;
-    --include-forks)
-      INCLUDE_FORKS=true
-      shift
-      ;;
-    --include-archived)
-      INCLUDE_ARCHIVED=true
-      shift
-      ;;
-    --dry-run)
-      DRY_RUN=true
-      shift
-      ;;
-    --yes)
-      YES=true
-      shift
-      ;;
-    --quiet)
-      QUIET=true
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      error "Unknown option: $1"
-      echo
-      usage
-      exit 1
-      ;;
+    --include-forks) INCLUDE_FORKS=true; shift ;;
+    --include-archived) INCLUDE_ARCHIVED=true; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --yes) YES=true; shift ;;
+    --quiet) QUIET=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) error "Unknown option: $1"; echo; usage; exit 1 ;;
   esac
 done
 
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
-    error "Missing required command: $1"
-    exit 1
-  }
-}
-
+# Environment Setup
 require_cmd gh
 require_cmd jq
-
-if ! gh auth status >/dev/null 2>&1; then
-  error "GitHub CLI is not authenticated. Run: gh auth login"
-  exit 1
-fi
-
-get_repos() {
-  if [[ "$MODE" == "selected" ]]; then
-    printf "%s\n" "${SELECTED_REPOS[@]}"
-    return
-  fi
-
-  local args=(repo list "$OWNER" --limit 2000 --json name)
-
-  if [[ "$VISIBILITY" != "all" ]]; then
-    args+=(--visibility "$VISIBILITY")
-  fi
-
-  if [[ "$INCLUDE_ARCHIVED" == false ]]; then
-    args+=(--no-archived)
-  fi
-
-  if [[ "$INCLUDE_FORKS" == false ]]; then
-    args+=(--source)
-  fi
-
-  gh "${args[@]}" --jq '.[].name'
-}
+check_auth
+setup_temp_file
 
 confirm_scope() {
   local repo_count="$1"
-
-  if [[ "$YES" == true || "$DRY_RUN" == true ]]; then
-    return 0
-  fi
+  if [[ "$YES" == true || "$DRY_RUN" == true ]]; then return 0; fi
 
   warn "DESTRUCTIVE ACTION: You are about to DELETE rulesets."
   echo "  Target Ruleset(s): $TARGET_RULESET"
@@ -221,7 +110,7 @@ print_summary_header() {
   echo "Dry run: $DRY_RUN"
 }
 
-# macOS compatible array generation
+# Fetch Repositories
 REPOS=()
 while IFS= read -r repo_name; do
   [[ -n "$repo_name" ]] && REPOS+=("$repo_name")
@@ -231,6 +120,29 @@ if [[ ${#REPOS[@]} -eq 0 ]]; then
   warn "No repositories matched your filters."
   exit 0
 fi
+
+# --- FAIL-FAST PRE-FLIGHT CHECK ---
+if [[ "$TARGET_RULESET" != "all" ]]; then
+  info "Performing pre-flight check for ruleset: '$TARGET_RULESET'..."
+  RULESET_EXISTS=false
+  
+  for PRECHECK_REPO in "${REPOS[@]}"; do
+    # Suppress errors (like 403s on archived repos) during the pre-check
+    if gh api "/repos/$OWNER/$PRECHECK_REPO/rulesets" 2>/dev/null | jq -e --arg name "$TARGET_RULESET" 'any(.[]; .name == $name)' >/dev/null; then
+      RULESET_EXISTS=true
+      break # We found it at least once, safe to proceed!
+    fi
+  done
+
+  if [[ "$RULESET_EXISTS" == false ]]; then
+    error "Fail-Fast Abort: The ruleset '$TARGET_RULESET' does not exist in any of the ${#REPOS[@]} targeted repositories."
+    error "Please check the name for typos."
+    exit 1
+  fi
+  success "Pre-flight passed: Target ruleset exists."
+  echo "----------------------------------------"
+fi
+# --- END FAIL-FAST ---
 
 print_summary_header
 echo "Matched repos: ${#REPOS[@]}"
@@ -266,7 +178,6 @@ for REPO in "${REPOS[@]}"; do
     continue
   fi
 
-  # Extract IDs based on whether we are filtering by name or deleting all
   if [[ "$TARGET_RULESET" == "all" ]]; then
     RULESET_IDS="$(printf '%s' "$RULESET_LIST" | jq -r '.[].id')"
   else
@@ -322,21 +233,6 @@ echo "Repos with deletions: $DELETED_REPOS_COUNT"
 echo "Repos skipped:        $SKIPPED_REPOS_COUNT"
 echo "Repos failed:         $FAILED_REPOS_COUNT"
 
-if [[ ${#DELETED_DETAILS[@]} -gt 0 ]]; then
-  echo
-  echo "Repos modified:"
-  printf ' - %s\n' "${DELETED_DETAILS[@]}"
-fi
-
-if [[ ${#SKIPPED_DETAILS[@]} -gt 0 ]]; then
-  echo
-  echo "Repos skipped:"
-  printf ' - %s\n' "${SKIPPED_DETAILS[@]}"
-fi
-
-if [[ ${#FAILED_DETAILS[@]} -gt 0 ]]; then
-  echo
-  echo "Repos failed:"
-  printf ' - %s\n' "${FAILED_DETAILS[@]}"
-  exit 1
-fi
+if [[ ${#DELETED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos modified:\n$(printf ' - %s\n' "${DELETED_DETAILS[@]}")"; fi
+if [[ ${#SKIPPED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos skipped:\n$(printf ' - %s\n' "${SKIPPED_DETAILS[@]}")"; fi
+if [[ ${#FAILED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos failed:\n$(printf ' - %s\n' "${FAILED_DETAILS[@]}")"; exit 1; fi
