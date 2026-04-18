@@ -1,0 +1,2 @@
+# Ignore ruleset script execution state
+.gh_state_*
