@@ -35,13 +35,14 @@ Engineered for **safety**, **idempotency**, and **scalability**, featuring paral
 
 ## 🏗️ Architecture
 
-This toolset consists of three core components:
+This toolset separates policy definitions from execution logic:
 
 | Component | Description |
 |:---|:---|
-| [`common.sh`](file:///Users/vivekmankonda/Documents/GitHub/my-rulesets/common.sh) | **Shared Infrastructure**: API helpers, logging, error handling, and parallel state management. |
-| [`setup_github_rules.sh`](file:///Users/vivekmankonda/Documents/GitHub/my-rulesets/setup_github_rules.sh) | **Sync Engine**: The primary tool for creating and updating the "Protect Master" ruleset. |
-| [`delete_github_rules.sh`](file:///Users/vivekmankonda/Documents/GitHub/my-rulesets/delete_github_rules.sh) | **Cleanup Engine**: Safely deletes rulesets by name or wipes all rulesets from a target. |
+| **`common.sh`** | **Shared Infrastructure**: API helpers, logging, error handling, and parallel state management. |
+| **`setup_github_rules.sh`** | **Sync Engine**: Creates and updates rulesets dynamically loaded from JSON policy configurations. |
+| **`delete_github_rules.sh`** | **Cleanup Engine**: Safely deletes rulesets using `--config` (extracts name automatically) or raw `--name`. |
+| **`policies/`** | **Policy Matrix**: 9 JSON configuration files categorized by scale (`individual`, `team`, `org`) and strictness. |
 
 ---
 
@@ -57,28 +58,25 @@ This toolset consists of three core components:
 
 ### 1. Setting Up & Updating Rulesets
 ```bash
-# Test on a single repository (Dry Run)
-./setup_github_rules.sh --repo my-fi --dry-run
+# Test a policy on a single repository (Dry Run)
+./setup_github_rules.sh --config policies/team/moderate.json --repo my-fi --dry-run
 
-# Apply to specific repositories with debug output
-./setup_github_rules.sh --repos "my-fi, borderless-buy" --debug-diff
+# Apply structural policies to specific repositories
+./setup_github_rules.sh --config policies/individual/strict.json --repos "my-fi, borderless-buy"
 
-# Scale out: Apply to ALL public repositories, processing 5 at a time
-./setup_github_rules.sh --all --visibility public --parallel 5
+# Scale out: Apply org-level rules to ALL public repositories, processing 5 at a time
+./setup_github_rules.sh --config policies/org/strict.json --all --visibility public --parallel 5
 
-# Security Audit: Apply but FAIL if any currently have Bypass Actors configured
-./setup_github_rules.sh --all --enforce-no-bypass
-
-# Security Remediation: Force wipe Bypass Actors across all private repos
-./setup_github_rules.sh --all --visibility private --remove-bypass
+# Security Audit: Compare live state against strict policy without making changes
+./setup_github_rules.sh --config policies/org/strict.json --all --dry-run
 ```
 
 ### 2. Deleting Rulesets
 ```bash
-# Safely verify what would happen if you delete a specific ruleset
-./delete_github_rules.sh --all --name "Protect Master" --dry-run
+# Extract the target ruleset name from the JSON config and safely simulate deleting it
+./delete_github_rules.sh --config policies/team/moderate.json --all --dry-run
 
-# Delete a specifically named ruleset from multiple selected repositories
+# Delete a ruleset via literal string name instead of config file
 ./delete_github_rules.sh --repos "my-fi, old-project" --name "Protect Master" --yes
 
 # Nuke Option: Delete ALL rulesets on a specific repository
@@ -91,6 +89,7 @@ This toolset consists of three core components:
 
 | Flag | Description | Default |
 |:---|:---|:---|
+| `--config <path>` | **[Required by setup]** Path to JSON policy file | - |
 | `--all` | Apply to all matching repos | `true` |
 | `--repo <name>` | Apply to a single repository | - |
 | `--repos <a,b>` | Apply to comma-separated repositories | - |
