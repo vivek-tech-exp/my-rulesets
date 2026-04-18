@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Source the shared library dynamically based on script location
-source "$(dirname "$0")/common.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
 
-# Script-specific variables
 TARGET_RULESET="all"
 
 usage() {
@@ -35,9 +34,7 @@ Behavior:
 EOF
 }
 
-for raw_arg in "$@"; do
-  normalize_unicode_dashes "$raw_arg"
-done
+for raw_arg in "$@"; do normalize_unicode_dashes "$raw_arg"; done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -76,6 +73,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --parallel)
       [[ $# -ge 2 ]] || { error "--parallel requires a value"; exit 1; }
+      [[ "$2" =~ ^[1-9][0-9]*$ ]] || { error "--parallel must be a positive integer"; exit 1; }
       PARALLEL="$2"
       shift 2
       ;;
@@ -88,6 +86,11 @@ while [[ $# -gt 0 ]]; do
     *) error "Unknown option: $1"; echo; usage; exit 1 ;;
   esac
 done
+
+if [[ "$VISIBILITY" != "public" && "$VISIBILITY" != "private" && "$VISIBILITY" != "all" ]]; then
+  error "Invalid --visibility value: $VISIBILITY"
+  exit 1
+fi
 
 require_cmd gh
 require_cmd jq
@@ -107,15 +110,6 @@ confirm_scope() {
   [[ "$answer" =~ ^[Yy]$ ]] || return 1
 }
 
-print_summary_header() {
-  section "Run summary"
-  echo "Owner: $OWNER"
-  echo "Mode: $MODE"
-  echo "Target ruleset: $TARGET_RULESET"
-  echo "Parallel jobs: $PARALLEL"
-  echo "Dry run: $DRY_RUN"
-}
-
 REPOS=()
 while IFS= read -r repo_name; do
   [[ -n "$repo_name" ]] && REPOS+=("$repo_name")
@@ -129,30 +123,37 @@ fi
 if [[ "$TARGET_RULESET" != "all" ]]; then
   info "Performing pre-flight check for ruleset: '$TARGET_RULESET' (scanning up to 5 repos)..."
   RULESET_EXISTS=false
-  PRECHECK_COUNT=0
   
-  for PRECHECK_REPO in "${REPOS[@]}"; do
-    if gh api --paginate "/repos/$OWNER/$PRECHECK_REPO/rulesets" 2>/dev/null | jq -e --arg name "$TARGET_RULESET" 'any(.[]; .name == $name)' >/dev/null; then
+  PRECHECK_LIMIT=5
+  if [[ ${#REPOS[@]} -lt 5 ]]; then PRECHECK_LIMIT=${#REPOS[@]}; fi
+  
+  for (( i=0; i<PRECHECK_LIMIT; i++ )); do
+    if gh api --paginate "/repos/$OWNER/${REPOS[$i]}/rulesets" 2>/dev/null | jq -e --arg name "$TARGET_RULESET" 'any(.[]; .name == $name)' >/dev/null; then
       RULESET_EXISTS=true
       break 
-    fi
-    PRECHECK_COUNT=$((PRECHECK_COUNT + 1))
-    if [[ "$PRECHECK_COUNT" -ge 5 ]]; then
-      info "Ruleset not found in first 5 repos. Bypassing pre-flight to utilize parallel scan..."
-      RULESET_EXISTS=true 
-      break
     fi
   done
 
   if [[ "$RULESET_EXISTS" == false ]]; then
-    error "Fail-Fast Abort: The ruleset '$TARGET_RULESET' does not exist in the targeted repositories."
-    error "Please check the name for typos."
-    exit 1
+    warn "Pre-flight check: Ruleset '$TARGET_RULESET' was not found in the first $PRECHECK_LIMIT repos scanned."
+    if [[ "$YES" == true ]]; then
+      info "Continuing due to --yes flag..."
+    else
+      read -r -p "This might be a typo. Continue full parallel scan anyway? [y/N] " answer
+      [[ "$answer" =~ ^[Yy]$ ]] || exit 1
+    fi
+  else
+    success "Pre-flight passed: Target ruleset exists."
   fi
   echo "----------------------------------------"
 fi
 
-print_summary_header
+section "Run summary"
+echo "Owner: $OWNER"
+echo "Mode: $MODE"
+echo "Target ruleset: $TARGET_RULESET"
+echo "Parallel jobs: $PARALLEL"
+echo "Dry run: $DRY_RUN"
 echo "Matched repos: ${#REPOS[@]}"
 
 if ! confirm_scope "${#REPOS[@]}"; then
@@ -163,12 +164,10 @@ fi
 process_repo() {
   local REPO="$1"
   
-  # --- CHECKPOINT RESUMABILITY ---
   if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/{created,updated,skipped,failed,deleted}.log 2>/dev/null; then
     info "[$REPO] Already processed in a previous run. Resuming..."
     return 0
   fi
-  # -------------------------------
 
   local SAFE_NAME="${REPO//\//_}"
   local TMP_ERR="$STATE_DIR/err_${SAFE_NAME}.log"
@@ -179,11 +178,11 @@ process_repo() {
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
       warn "[$REPO] Skipped (Archived)"
-      echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
+      record_state "skipped" "$REPO (archived)"
       return
     fi
     error "[$REPO] Failed to list rulesets: $ERR_MSG"
-    echo "$REPO (API error)" >> "$STATE_DIR/failed.log"
+    record_state "failed" "$REPO (API error)"
     return
   fi
 
@@ -195,14 +194,16 @@ process_repo() {
 
   if [[ -z "$RULESET_IDS" || "$RULESET_IDS" == "null" ]]; then
     success "[$REPO] No matching rulesets to delete"
-    echo "$REPO (none found)" >> "$STATE_DIR/skipped.log"
+    record_state "skipped" "$REPO (none found)"
     return
   fi
 
   local REPO_DELETED_COUNT=0
   local REPO_FAILED=false
 
-  for ID in $RULESET_IDS; do
+  # Fix: Prevent word-splitting on the ruleset IDs (Shellcheck SC2066)
+  while IFS= read -r ID; do
+    [[ -z "$ID" ]] && continue
     RULE_NAME="$(printf '%s' "$RULESET_LIST" | jq -r --arg id "$ID" '.[] | select(.id == ($id|tonumber)) | .name')"
     
     if [[ "$DRY_RUN" == true ]]; then
@@ -220,8 +221,7 @@ process_repo() {
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
           warn "[$REPO] Skipped (Archived)"
-          echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
-          # Break out of the ID loop since the whole repo is archived
+          record_state "skipped" "$REPO (archived)"
           break 
         else
           error "[$REPO] Failed to delete ruleset '$RULE_NAME': $ERR_MSG"
@@ -229,25 +229,24 @@ process_repo() {
         fi
       fi
     fi
-  done
+  done <<< "$RULESET_IDS"
 
   if [[ "$REPO_FAILED" == true ]]; then
-    echo "$REPO (partial/full failure)" >> "$STATE_DIR/failed.log"
+    record_state "failed" "$REPO (partial/full failure)"
   elif [[ "$REPO_DELETED_COUNT" -gt 0 ]]; then
     if [[ "$DRY_RUN" == true ]]; then
-      echo "$REPO (dry-run: $REPO_DELETED_COUNT rulesets)" >> "$STATE_DIR/deleted.log"
+      record_state "deleted" "$REPO (dry-run: $REPO_DELETED_COUNT rulesets)"
     else
-      echo "$REPO ($REPO_DELETED_COUNT rulesets)" >> "$STATE_DIR/deleted.log"
+      record_state "deleted" "$REPO ($REPO_DELETED_COUNT rulesets)"
     fi
   fi
 }
 
 echo "----------------------------------------"
-job_count=0
 repo_counter=0
+pids=()
 
 for REPO in "${REPOS[@]}"; do
-  # Check rate limit every 10 repositories to minimize overhead
   if (( repo_counter % 10 == 0 )); then
     check_rate_limit
   fi
@@ -257,14 +256,16 @@ for REPO in "${REPOS[@]}"; do
     process_repo "$REPO"
   else
     process_repo "$REPO" &
-    job_count=$((job_count + 1))
-    if [[ $job_count -ge $PARALLEL ]]; then
-      wait
-      job_count=0
+    pids+=($!)
+    if [[ ${#pids[@]} -ge $PARALLEL ]]; then
+      for pid in "${pids[@]}"; do
+        wait "$pid" || error "A background job failed to exit cleanly."
+      done
+      pids=()
     fi
   fi
 done
-wait
+for pid in "${pids[@]}"; do wait "$pid" || error "A background job failed to exit cleanly."; done
 
 read_state() {
   local file="$STATE_DIR/$1"

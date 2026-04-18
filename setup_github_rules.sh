@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Source the shared library dynamically based on script location
-source "$(dirname "$0")/common.sh"
+# Robust source pathing
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
 
 # Script-specific variables
 RULESET_NAME="Protect Master"
@@ -38,9 +39,7 @@ Behavior:
 EOF
 }
 
-for raw_arg in "$@"; do
-  normalize_unicode_dashes "$raw_arg"
-done
+for raw_arg in "$@"; do normalize_unicode_dashes "$raw_arg"; done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,6 +73,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --parallel)
       [[ $# -ge 2 ]] || { error "--parallel requires a value"; exit 1; }
+      [[ "$2" =~ ^[1-9][0-9]*$ ]] || { error "--parallel must be a positive integer"; exit 1; }
       PARALLEL="$2"
       shift 2
       ;;
@@ -105,9 +105,10 @@ require_cmd jq
 check_auth
 setup_state_dir
 
-read -r -d '' BASE_PAYLOAD <<'EOF' || true
+# Dynamic payload injection (unquoted EOF allows variable expansion)
+read -r -d '' BASE_PAYLOAD <<EOF || true
 {
-  "name": "Protect Master",
+  "name": "$RULESET_NAME",
   "target": "branch",
   "enforcement": "active",
   "conditions": {
@@ -189,11 +190,7 @@ print_summary_header() {
   echo "Mode: $MODE"
   echo "Visibility: $VISIBILITY"
   echo "Parallel jobs: $PARALLEL"
-  echo "Include forks: $INCLUDE_FORKS"
-  echo "Include archived: $INCLUDE_ARCHIVED"
   echo "Dry run: $DRY_RUN"
-  echo "Enforce no bypass: $ENFORCE_NO_BYPASS"
-  echo "Remove bypass: $REMOVE_BYPASS"
 }
 
 REPOS=()
@@ -222,12 +219,10 @@ fi
 process_repo() {
   local REPO="$1"
   
-  # --- CHECKPOINT RESUMABILITY ---
   if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/{created,updated,skipped,failed,deleted}.log 2>/dev/null; then
     info "[$REPO] Already processed in a previous run. Resuming..."
     return 0
   fi
-  # -------------------------------
 
   local SAFE_NAME="${REPO//\//_}"
   local TMP_ERR="$STATE_DIR/err_${SAFE_NAME}.log"
@@ -238,11 +233,11 @@ process_repo() {
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
       warn "[$REPO] Skipped (Archived)"
-      echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
+      record_state "skipped" "$REPO (archived)"
       return
     fi
     error "[$REPO] Failed to list rulesets: $ERR_MSG"
-    echo "$REPO" >> "$STATE_DIR/failed.log"
+    record_state "failed" "$REPO"
     return
   fi
 
@@ -253,7 +248,7 @@ process_repo() {
 
     if [[ "$DRY_RUN" == true ]]; then
       warn "[$REPO] Would create ruleset"
-      echo "$REPO (dry-run:create)" >> "$STATE_DIR/skipped.log"
+      record_state "skipped" "$REPO (dry-run:create)"
     else
       if gh api \
         --method POST \
@@ -262,15 +257,15 @@ process_repo() {
         "/repos/$OWNER/$REPO/rulesets" \
         --input - <<<"$CREATE_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
         success "[$REPO] Created ruleset"
-        echo "$REPO" >> "$STATE_DIR/created.log"
+        record_state "created" "$REPO"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
           warn "[$REPO] Skipped (Archived)"
-          echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
+          record_state "skipped" "$REPO (archived)"
         else
           error "[$REPO] Failed to create ruleset: $ERR_MSG"
-          echo "$REPO" >> "$STATE_DIR/failed.log"
+          record_state "failed" "$REPO"
         fi
       fi
     fi
@@ -279,7 +274,7 @@ process_repo() {
 
   if ! LIVE_JSON="$(gh api "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" 2>"$TMP_ERR")"; then
     error "[$REPO] Failed to fetch ruleset $RULESET_ID: $(cat "$TMP_ERR")"
-    echo "$REPO" >> "$STATE_DIR/failed.log"
+    record_state "failed" "$REPO"
     return
   fi
 
@@ -287,7 +282,7 @@ process_repo() {
     BYPASS_COUNT="$(printf '%s' "$LIVE_JSON" | jq '.bypass_actors | length')"
     if [[ "$BYPASS_COUNT" -gt 0 ]]; then
       error "[$REPO] Has bypass actors configured, but --enforce-no-bypass was set."
-      echo "$REPO (bypass enforced)" >> "$STATE_DIR/failed.log"
+      record_state "failed" "$REPO (bypass enforced)"
       return
     fi
   fi
@@ -313,7 +308,7 @@ process_repo() {
 
   if [[ "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" ]]; then
     success "[$REPO] Already matches desired state"
-    echo "$REPO" >> "$STATE_DIR/skipped.log"
+    record_state "skipped" "$REPO"
   else
     if [[ "$DEBUG_DIFF" == true ]]; then
       echo "--- [$REPO] desired canonical ---"
@@ -324,7 +319,7 @@ process_repo() {
 
     if [[ "$DRY_RUN" == true ]]; then
       warn "[$REPO] Would update ruleset"
-      echo "$REPO (dry-run:update)" >> "$STATE_DIR/skipped.log"
+      record_state "skipped" "$REPO (dry-run:update)"
     else
       if gh api \
         --method PUT \
@@ -333,15 +328,15 @@ process_repo() {
         "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" \
         --input - <<<"$MERGED_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
         success "[$REPO] Updated ruleset"
-        echo "$REPO" >> "$STATE_DIR/updated.log"
+        record_state "updated" "$REPO"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
           warn "[$REPO] Skipped (Archived)"
-          echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
+          record_state "skipped" "$REPO (archived)"
         else
           error "[$REPO] Failed to update ruleset: $ERR_MSG"
-          echo "$REPO" >> "$STATE_DIR/failed.log"
+          record_state "failed" "$REPO"
         fi
       fi
     fi
@@ -349,11 +344,10 @@ process_repo() {
 }
 
 echo "----------------------------------------"
-job_count=0
 repo_counter=0
+pids=()
 
 for REPO in "${REPOS[@]}"; do
-  # Check rate limit every 10 repositories to minimize overhead
   if (( repo_counter % 10 == 0 )); then
     check_rate_limit
   fi
@@ -363,16 +357,17 @@ for REPO in "${REPOS[@]}"; do
     process_repo "$REPO"
   else
     process_repo "$REPO" &
-    job_count=$((job_count + 1))
-    if [[ $job_count -ge $PARALLEL ]]; then
-      wait
-      job_count=0
+    pids+=($!)
+    if [[ ${#pids[@]} -ge $PARALLEL ]]; then
+      for pid in "${pids[@]}"; do
+        wait "$pid" || error "A background job failed to exit cleanly."
+      done
+      pids=()
     fi
   fi
 done
-wait # Catch any remaining jobs
+for pid in "${pids[@]}"; do wait "$pid" || error "A background job failed to exit cleanly."; done
 
-# Read states back into arrays safely
 read_state() {
   local file="$STATE_DIR/$1"
   if [[ -f "$file" ]]; then

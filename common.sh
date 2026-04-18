@@ -68,16 +68,14 @@ check_auth() {
   fi
 }
 
-# --- State Management (Persistent & Isolated) ---
+# --- State Management ---
 setup_state_dir() {
   local caller_script
   caller_script="$(basename "$0" .sh)"
   
-  # Creates isolated, persistent states: .gh_state_setup_github_rules_vivek-tech-exp
   STATE_DIR="${PWD}/.gh_state_${caller_script}_${OWNER}"
   mkdir -p "$STATE_DIR"
   
-  # Ensure log files exist so grep doesn't fail later
   touch "$STATE_DIR/created.log" "$STATE_DIR/updated.log" \
         "$STATE_DIR/skipped.log" "$STATE_DIR/failed.log" \
         "$STATE_DIR/deleted.log"
@@ -85,29 +83,29 @@ setup_state_dir() {
   info "State directory: $STATE_DIR"
 }
 
-# --- Rate Limit Protection (Graceful Exit) ---
+# POSIX atomic append (safe for strings < PIPE_BUF / 512 bytes)
+record_state() {
+  local state_type="$1"
+  local text="$2"
+  printf '%s\n' "$text" >> "$STATE_DIR/${state_type}.log"
+}
+
+# --- Rate Limit Protection ---
 check_rate_limit() {
   local rate_data
-  if ! rate_data="$(gh api /rate_limit 2>/dev/null)"; then
-    return 0 
-  fi
+  if ! rate_data="$(gh api /rate_limit 2>/dev/null)"; then return 0; fi
 
   local remaining
   local reset_time
-  # Suppress jq errors if JSON is malformed
   remaining="$(echo "$rate_data" | jq -r '.resources.core.remaining' 2>/dev/null || true)"
   reset_time="$(echo "$rate_data" | jq -r '.resources.core.reset' 2>/dev/null || true)"
 
-  # Fail silently and let the main script continue if we didn't get a valid integer back
-  if [[ -z "$remaining" || ! "$remaining" =~ ^[0-9]+$ ]]; then
-    return 0 
-  fi
+  if [[ -z "$remaining" || ! "$remaining" =~ ^[0-9]+$ ]]; then return 0; fi
 
   if [[ "$remaining" -lt 50 ]]; then
     echo "----------------------------------------"
     warn "PRIMARY API RATE LIMIT EXHAUSTED ($remaining requests left)."
     
-    # Calculate human-readable time for macOS/Linux compatibility
     if date --version >/dev/null 2>&1; then
       local reset_str="$(date -d "@$reset_time" '+%I:%M %p')"
     else
@@ -118,12 +116,10 @@ check_rate_limit() {
     warn "The script has safely saved its state to $STATE_DIR."
     warn "Waiting for running background jobs to finish securely..."
     
-    # Wait for the currently active parallel jobs to finish and save state
     wait 
     
     warn "Simply run the exact same command later to resume from where it left off."
     echo "----------------------------------------"
-    
     exit 429
   fi
 }
@@ -135,7 +131,6 @@ get_repos() {
     return
   fi
 
-  # Upgraded to 10,000 for enterprise scale compatibility
   local args=(repo list "$OWNER" --limit 10000 --json name)
 
   if [[ "$VISIBILITY" != "all" ]]; then
