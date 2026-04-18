@@ -24,6 +24,7 @@ Engineered for **safety**, **idempotency**, and **scalability**, featuring paral
 ## ✨ Features
 
 - 🔄 **Idempotent Updates**: Compares canonicalized live ruleset JSON against desired state to prevent unnecessary API calls and noisy audit logs.
+- 🔍 **Fleet Discovery**: Isolated `--audit` mode crawls the full policy matrix to instantly map organizational drift without requiring a specific config or making mutating API calls.
 - ⚡ **Concurrency**: Process multiple repositories simultaneously using the `--parallel` flag for massive speed improvements at scale.
 - 🎯 **Smart Targeting**: Dynamically targets the repository's native default branch (`~DEFAULT_BRANCH`) rather than hardcoding `main` or `master`.
 - 🕵️ **Bypass Actor Management**: Audit or intentionally wipe `bypass_actors` configuration across your repositories.
@@ -71,7 +72,16 @@ This toolset separates policy definitions from execution logic:
 ./setup_github_rules.sh --config policies/org/strict.json --all --dry-run
 ```
 
-### 2. Deleting Rulesets
+### 2. Fleet Discovery (Audit Mode)
+```bash
+# Scan a specific repository against all 9 policies to map drift
+./setup_github_rules.sh --audit --repo my-rulesets
+
+# Scan the entire public organization fleet against all policies concurrently
+./setup_github_rules.sh --audit --all --visibility public --parallel 5
+```
+
+### 3. Deleting Rulesets
 ```bash
 # Extract the target ruleset name from the JSON config and safely simulate deleting it
 ./delete_github_rules.sh --config policies/team/moderate.json --all --dry-run
@@ -90,6 +100,7 @@ This toolset separates policy definitions from execution logic:
 | Flag | Description | Default |
 |:---|:---|:---|
 | `--config <path>` | **[Required by setup]** Path to JSON policy file | - |
+| `--audit` | **[Fleet Discovery]** Check repos against all policies in `policies/` (replaces `--config`) | `false` |
 | `--all` | Apply to all matching repos | `true` |
 | `--repo <name>` | Apply to a single repository | - |
 | `--repos <a,b>` | Apply to comma-separated repositories | - |
