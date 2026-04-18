@@ -223,7 +223,7 @@ process_repo() {
   local REPO="$1"
   
   # --- CHECKPOINT RESUMABILITY ---
-  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/*.log 2>/dev/null; then
+  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/{created,updated,skipped,failed,deleted}.log 2>/dev/null; then
     info "[$REPO] Already processed in a previous run. Resuming..."
     return 0
   fi

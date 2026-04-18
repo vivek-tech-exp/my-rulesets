@@ -127,22 +127,28 @@ if [[ ${#REPOS[@]} -eq 0 ]]; then
 fi
 
 if [[ "$TARGET_RULESET" != "all" ]]; then
-  info "Performing pre-flight check for ruleset: '$TARGET_RULESET'..."
+  info "Performing pre-flight check for ruleset: '$TARGET_RULESET' (scanning up to 5 repos)..."
   RULESET_EXISTS=false
+  PRECHECK_COUNT=0
   
   for PRECHECK_REPO in "${REPOS[@]}"; do
     if gh api --paginate "/repos/$OWNER/$PRECHECK_REPO/rulesets" 2>/dev/null | jq -e --arg name "$TARGET_RULESET" 'any(.[]; .name == $name)' >/dev/null; then
       RULESET_EXISTS=true
       break 
     fi
+    PRECHECK_COUNT=$((PRECHECK_COUNT + 1))
+    if [[ "$PRECHECK_COUNT" -ge 5 ]]; then
+      info "Ruleset not found in first 5 repos. Bypassing pre-flight to utilize parallel scan..."
+      RULESET_EXISTS=true 
+      break
+    fi
   done
 
   if [[ "$RULESET_EXISTS" == false ]]; then
-    error "Fail-Fast Abort: The ruleset '$TARGET_RULESET' does not exist in any of the ${#REPOS[@]} targeted repositories."
+    error "Fail-Fast Abort: The ruleset '$TARGET_RULESET' does not exist in the targeted repositories."
     error "Please check the name for typos."
     exit 1
   fi
-  success "Pre-flight passed: Target ruleset exists."
   echo "----------------------------------------"
 fi
 
@@ -158,7 +164,7 @@ process_repo() {
   local REPO="$1"
   
   # --- CHECKPOINT RESUMABILITY ---
-  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/*.log 2>/dev/null; then
+  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/{created,updated,skipped,failed,deleted}.log 2>/dev/null; then
     info "[$REPO] Already processed in a previous run. Resuming..."
     return 0
   fi

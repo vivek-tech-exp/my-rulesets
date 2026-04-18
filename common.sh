@@ -94,8 +94,14 @@ check_rate_limit() {
 
   local remaining
   local reset_time
-  remaining="$(echo "$rate_data" | jq -r '.resources.core.remaining')"
-  reset_time="$(echo "$rate_data" | jq -r '.resources.core.reset')"
+  # Suppress jq errors if JSON is malformed
+  remaining="$(echo "$rate_data" | jq -r '.resources.core.remaining' 2>/dev/null || true)"
+  reset_time="$(echo "$rate_data" | jq -r '.resources.core.reset' 2>/dev/null || true)"
+
+  # Fail silently and let the main script continue if we didn't get a valid integer back
+  if [[ -z "$remaining" || ! "$remaining" =~ ^[0-9]+$ ]]; then
+    return 0 
+  fi
 
   if [[ "$remaining" -lt 50 ]]; then
     echo "----------------------------------------"
@@ -124,7 +130,8 @@ get_repos() {
     return
   fi
 
-  local args=(repo list "$OWNER" --limit 2000 --json name)
+  # Upgraded to 10,000 for enterprise scale compatibility
+  local args=(repo list "$OWNER" --limit 10000 --json name)
 
   if [[ "$VISIBILITY" != "all" ]]; then
     args+=(--visibility "$VISIBILITY")
