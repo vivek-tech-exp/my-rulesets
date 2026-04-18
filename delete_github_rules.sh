@@ -27,6 +27,7 @@ Target:
   --name <name>               Delete only rulesets matching this name (default: all rulesets)
 
 Behavior:
+  --parallel <N>              Process N repos concurrently (default: 1)
   --dry-run                   Show actions without deleting anything
   --yes                       Skip confirmation prompts
   --quiet                     Reduce non-essential output
@@ -73,6 +74,11 @@ while [[ $# -gt 0 ]]; do
       TARGET_RULESET="$2"
       shift 2
       ;;
+    --parallel)
+      [[ $# -ge 2 ]] || { error "--parallel requires a value"; exit 1; }
+      PARALLEL="$2"
+      shift 2
+      ;;
     --include-forks) INCLUDE_FORKS=true; shift ;;
     --include-archived) INCLUDE_ARCHIVED=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -83,11 +89,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Environment Setup
 require_cmd gh
 require_cmd jq
 check_auth
-setup_temp_file
+setup_state_dir
 
 confirm_scope() {
   local repo_count="$1"
@@ -107,10 +112,10 @@ print_summary_header() {
   echo "Owner: $OWNER"
   echo "Mode: $MODE"
   echo "Target ruleset: $TARGET_RULESET"
+  echo "Parallel jobs: $PARALLEL"
   echo "Dry run: $DRY_RUN"
 }
 
-# Fetch Repositories
 REPOS=()
 while IFS= read -r repo_name; do
   [[ -n "$repo_name" ]] && REPOS+=("$repo_name")
@@ -121,16 +126,14 @@ if [[ ${#REPOS[@]} -eq 0 ]]; then
   exit 0
 fi
 
-# --- FAIL-FAST PRE-FLIGHT CHECK ---
 if [[ "$TARGET_RULESET" != "all" ]]; then
   info "Performing pre-flight check for ruleset: '$TARGET_RULESET'..."
   RULESET_EXISTS=false
   
   for PRECHECK_REPO in "${REPOS[@]}"; do
-    # Suppress errors (like 403s on archived repos) during the pre-check
-    if gh api "/repos/$OWNER/$PRECHECK_REPO/rulesets" 2>/dev/null | jq -e --arg name "$TARGET_RULESET" 'any(.[]; .name == $name)' >/dev/null; then
+    if gh api --paginate "/repos/$OWNER/$PRECHECK_REPO/rulesets" 2>/dev/null | jq -e --arg name "$TARGET_RULESET" 'any(.[]; .name == $name)' >/dev/null; then
       RULESET_EXISTS=true
-      break # We found it at least once, safe to proceed!
+      break 
     fi
   done
 
@@ -142,7 +145,6 @@ if [[ "$TARGET_RULESET" != "all" ]]; then
   success "Pre-flight passed: Target ruleset exists."
   echo "----------------------------------------"
 fi
-# --- END FAIL-FAST ---
 
 print_summary_header
 echo "Matched repos: ${#REPOS[@]}"
@@ -152,30 +154,23 @@ if ! confirm_scope "${#REPOS[@]}"; then
   exit 0
 fi
 
-DELETED_REPOS_COUNT=0
-SKIPPED_REPOS_COUNT=0
-FAILED_REPOS_COUNT=0
-
-DELETED_DETAILS=()
-SKIPPED_DETAILS=()
-FAILED_DETAILS=()
-
-for REPO in "${REPOS[@]}"; do
-  echo "----------------------------------------"
-  info "Processing: $REPO"
+process_repo() {
+  local REPO="$1"
+  local SAFE_NAME="${REPO//\//_}"
+  local TMP_ERR="$STATE_DIR/err_${SAFE_NAME}.log"
+  
+  info "[$REPO] Processing..."
 
   if ! RULESET_LIST="$(gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
-      warn "Skipping $REPO (Archived)"
-      SKIPPED_REPOS_COUNT=$((SKIPPED_REPOS_COUNT + 1))
-      SKIPPED_DETAILS+=("$REPO (archived)")
-      continue
+      warn "[$REPO] Skipped (Archived)"
+      echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
+      return
     fi
-    error "Failed to list rulesets for $REPO: $ERR_MSG"
-    FAILED_REPOS_COUNT=$((FAILED_REPOS_COUNT + 1))
-    FAILED_DETAILS+=("$REPO (API error)")
-    continue
+    error "[$REPO] Failed to list rulesets: $ERR_MSG"
+    echo "$REPO (API error)" >> "$STATE_DIR/failed.log"
+    return
   fi
 
   if [[ "$TARGET_RULESET" == "all" ]]; then
@@ -185,20 +180,19 @@ for REPO in "${REPOS[@]}"; do
   fi
 
   if [[ -z "$RULESET_IDS" || "$RULESET_IDS" == "null" ]]; then
-    success "No matching rulesets to delete in $REPO"
-    SKIPPED_REPOS_COUNT=$((SKIPPED_REPOS_COUNT + 1))
-    SKIPPED_DETAILS+=("$REPO (none found)")
-    continue
+    success "[$REPO] No matching rulesets to delete"
+    echo "$REPO (none found)" >> "$STATE_DIR/skipped.log"
+    return
   fi
 
-  REPO_DELETED_COUNT=0
-  REPO_FAILED=false
+  local REPO_DELETED_COUNT=0
+  local REPO_FAILED=false
 
   for ID in $RULESET_IDS; do
     RULE_NAME="$(printf '%s' "$RULESET_LIST" | jq -r --arg id "$ID" '.[] | select(.id == ($id|tonumber)) | .name')"
     
     if [[ "$DRY_RUN" == true ]]; then
-      warn "Would delete ruleset '$RULE_NAME' (ID: $ID) in $REPO"
+      warn "[$REPO] Would delete ruleset '$RULE_NAME' (ID: $ID)"
       REPO_DELETED_COUNT=$((REPO_DELETED_COUNT + 1))
     else
       if gh api \
@@ -206,32 +200,62 @@ for REPO in "${REPOS[@]}"; do
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
         "/repos/$OWNER/$REPO/rulesets/$ID" >/dev/null 2>"$TMP_ERR"; then
-        success "Deleted ruleset '$RULE_NAME' in $REPO"
+        success "[$REPO] Deleted ruleset '$RULE_NAME'"
         REPO_DELETED_COUNT=$((REPO_DELETED_COUNT + 1))
       else
-        error "Failed to delete ruleset '$RULE_NAME' in $REPO: $(cat "$TMP_ERR")"
+        error "[$REPO] Failed to delete ruleset '$RULE_NAME': $(cat "$TMP_ERR")"
         REPO_FAILED=true
       fi
     fi
   done
 
   if [[ "$REPO_FAILED" == true ]]; then
-    FAILED_REPOS_COUNT=$((FAILED_REPOS_COUNT + 1))
-    FAILED_DETAILS+=("$REPO (partial/full failure)")
+    echo "$REPO (partial/full failure)" >> "$STATE_DIR/failed.log"
   elif [[ "$REPO_DELETED_COUNT" -gt 0 ]]; then
-    DELETED_REPOS_COUNT=$((DELETED_REPOS_COUNT + 1))
     if [[ "$DRY_RUN" == true ]]; then
-      DELETED_DETAILS+=("$REPO (dry-run: $REPO_DELETED_COUNT rulesets)")
+      echo "$REPO (dry-run: $REPO_DELETED_COUNT rulesets)" >> "$STATE_DIR/deleted.log"
     else
-      DELETED_DETAILS+=("$REPO ($REPO_DELETED_COUNT rulesets)")
+      echo "$REPO ($REPO_DELETED_COUNT rulesets)" >> "$STATE_DIR/deleted.log"
+    fi
+  fi
+}
+
+echo "----------------------------------------"
+job_count=0
+for REPO in "${REPOS[@]}"; do
+  if [[ "$PARALLEL" -eq 1 ]]; then
+    process_repo "$REPO"
+  else
+    process_repo "$REPO" &
+    job_count=$((job_count + 1))
+    if [[ $job_count -ge $PARALLEL ]]; then
+      wait
+      job_count=0
     fi
   fi
 done
+wait
+
+read_state() {
+  local file="$STATE_DIR/$1"
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && echo "$line"
+    done < "$file"
+  fi
+}
+
+DELETED_DETAILS=()
+while IFS= read -r line; do DELETED_DETAILS+=("$line"); done < <(read_state "deleted.log")
+SKIPPED_DETAILS=()
+while IFS= read -r line; do SKIPPED_DETAILS+=("$line"); done < <(read_state "skipped.log")
+FAILED_DETAILS=()
+while IFS= read -r line; do FAILED_DETAILS+=("$line"); done < <(read_state "failed.log")
 
 section "Final report"
-echo "Repos with deletions: $DELETED_REPOS_COUNT"
-echo "Repos skipped:        $SKIPPED_REPOS_COUNT"
-echo "Repos failed:         $FAILED_REPOS_COUNT"
+echo "Repos with deletions: ${#DELETED_DETAILS[@]}"
+echo "Repos skipped:        ${#SKIPPED_DETAILS[@]}"
+echo "Repos failed:         ${#FAILED_DETAILS[@]}"
 
 if [[ ${#DELETED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos modified:\n$(printf ' - %s\n' "${DELETED_DETAILS[@]}")"; fi
 if [[ ${#SKIPPED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos skipped:\n$(printf ' - %s\n' "${SKIPPED_DETAILS[@]}")"; fi

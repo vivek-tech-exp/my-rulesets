@@ -10,6 +10,7 @@ INCLUDE_ARCHIVED=false
 DRY_RUN=false
 YES=false
 QUIET=false
+PARALLEL=1
 SELECTED_REPOS=()
 
 # --- Colors ---
@@ -67,10 +68,10 @@ check_auth() {
   fi
 }
 
-setup_temp_file() {
-  # Global variable accessible by the importing script
-  TMP_ERR="$(mktemp "${TMPDIR:-/tmp}/gh_ruleset_err.XXXXXX")"
-  trap 'rm -f "$TMP_ERR"' EXIT
+setup_state_dir() {
+  # Global directory accessible by the importing script and its child jobs
+  STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gh_ruleset_state.XXXXXX")"
+  trap 'rm -rf "$STATE_DIR"' EXIT
 }
 
 # --- GitHub API Helpers ---

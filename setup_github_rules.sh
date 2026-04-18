@@ -27,6 +27,7 @@ Scope:
   --include-archived          Include archived repos
 
 Behavior:
+  --parallel <N>              Process N repos concurrently (default: 1)
   --enforce-no-bypass         Fail if the existing ruleset has bypass actors configured
   --remove-bypass             Wipe existing bypass actors from the ruleset
   --dry-run                   Show actions without changing anything
@@ -71,6 +72,11 @@ while [[ $# -gt 0 ]]; do
       VISIBILITY="$2"
       shift 2
       ;;
+    --parallel)
+      [[ $# -ge 2 ]] || { error "--parallel requires a value"; exit 1; }
+      PARALLEL="$2"
+      shift 2
+      ;;
     --include-forks) INCLUDE_FORKS=true; shift ;;
     --include-archived) INCLUDE_ARCHIVED=true; shift ;;
     --enforce-no-bypass) ENFORCE_NO_BYPASS=true; shift ;;
@@ -94,11 +100,10 @@ if [[ "$ENFORCE_NO_BYPASS" == true && "$REMOVE_BYPASS" == true ]]; then
   exit 1
 fi
 
-# Environment Setup
 require_cmd gh
 require_cmd jq
 check_auth
-setup_temp_file
+setup_state_dir
 
 read -r -d '' BASE_PAYLOAD <<'EOF' || true
 {
@@ -183,6 +188,7 @@ print_summary_header() {
   echo "Owner: $OWNER"
   echo "Mode: $MODE"
   echo "Visibility: $VISIBILITY"
+  echo "Parallel jobs: $PARALLEL"
   echo "Include forks: $INCLUDE_FORKS"
   echo "Include archived: $INCLUDE_ARCHIVED"
   echo "Dry run: $DRY_RUN"
@@ -190,7 +196,6 @@ print_summary_header() {
   echo "Remove bypass: $REMOVE_BYPASS"
 }
 
-# Fetch Repositories
 REPOS=()
 while IFS= read -r repo_name; do
   [[ -n "$repo_name" ]] && REPOS+=("$repo_name")
@@ -203,39 +208,34 @@ fi
 
 print_summary_header
 echo "Matched repos: ${#REPOS[@]}"
-printf ' - %s\n' "${REPOS[@]}"
+if [[ "$PARALLEL" -eq 1 ]]; then
+  printf ' - %s\n' "${REPOS[@]}"
+else
+  echo " (Names omitted for brevity due to parallel mode)"
+fi
 
 if ! confirm_scope "${#REPOS[@]}"; then
   warn "Cancelled by user."
   exit 0
 fi
 
-CREATED=0
-UPDATED=0
-SKIPPED=0
-FAILED=0
-
-CREATED_REPOS=()
-UPDATED_REPOS=()
-SKIPPED_REPOS=()
-FAILED_REPOS=()
-
-for REPO in "${REPOS[@]}"; do
-  echo "----------------------------------------"
-  info "Processing: $REPO"
+process_repo() {
+  local REPO="$1"
+  local SAFE_NAME="${REPO//\//_}"
+  local TMP_ERR="$STATE_DIR/err_${SAFE_NAME}.log"
+  
+  info "[$REPO] Processing..."
 
   if ! RULESET_LIST="$(gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
-      warn "Skipping $REPO (Archived)"
-      SKIPPED=$((SKIPPED + 1))
-      SKIPPED_REPOS+=("$REPO (archived)")
-      continue
+      warn "[$REPO] Skipped (Archived)"
+      echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
+      return
     fi
-    error "Failed to list rulesets for $REPO: $ERR_MSG"
-    FAILED=$((FAILED + 1))
-    FAILED_REPOS+=("$REPO")
-    continue
+    error "[$REPO] Failed to list rulesets: $ERR_MSG"
+    echo "$REPO" >> "$STATE_DIR/failed.log"
+    return
   fi
 
   RULESET_ID="$(printf '%s' "$RULESET_LIST" | jq -r --arg name "$RULESET_NAME" '.[] | select(.name == $name) | .id' | head -n1)"
@@ -244,9 +244,8 @@ for REPO in "${REPOS[@]}"; do
     CREATE_PAYLOAD="$(printf '%s' "$BASE_PAYLOAD" | jq '. + {bypass_actors: []}')"
 
     if [[ "$DRY_RUN" == true ]]; then
-      warn "Would create ruleset for $REPO"
-      SKIPPED=$((SKIPPED + 1))
-      SKIPPED_REPOS+=("$REPO (dry-run:create)")
+      warn "[$REPO] Would create ruleset"
+      echo "$REPO (dry-run:create)" >> "$STATE_DIR/skipped.log"
     else
       if gh api \
         --method POST \
@@ -254,39 +253,34 @@ for REPO in "${REPOS[@]}"; do
         -H "X-GitHub-Api-Version: 2022-11-28" \
         "/repos/$OWNER/$REPO/rulesets" \
         --input - <<<"$CREATE_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
-        success "Created ruleset for $REPO"
-        CREATED=$((CREATED + 1))
-        CREATED_REPOS+=("$REPO")
+        success "[$REPO] Created ruleset"
+        echo "$REPO" >> "$STATE_DIR/created.log"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
-          warn "Skipping $REPO (Archived)"
-          SKIPPED=$((SKIPPED + 1))
-          SKIPPED_REPOS+=("$REPO (archived)")
+          warn "[$REPO] Skipped (Archived)"
+          echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
         else
-          error "Failed to create ruleset for $REPO: $ERR_MSG"
-          FAILED=$((FAILED + 1))
-          FAILED_REPOS+=("$REPO")
+          error "[$REPO] Failed to create ruleset: $ERR_MSG"
+          echo "$REPO" >> "$STATE_DIR/failed.log"
         fi
       fi
     fi
-    continue
+    return
   fi
 
   if ! LIVE_JSON="$(gh api "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" 2>"$TMP_ERR")"; then
-    error "Failed to fetch ruleset $RULESET_ID for $REPO: $(cat "$TMP_ERR")"
-    FAILED=$((FAILED + 1))
-    FAILED_REPOS+=("$REPO")
-    continue
+    error "[$REPO] Failed to fetch ruleset $RULESET_ID: $(cat "$TMP_ERR")"
+    echo "$REPO" >> "$STATE_DIR/failed.log"
+    return
   fi
 
   if [[ "$ENFORCE_NO_BYPASS" == true ]]; then
     BYPASS_COUNT="$(printf '%s' "$LIVE_JSON" | jq '.bypass_actors | length')"
     if [[ "$BYPASS_COUNT" -gt 0 ]]; then
-      error "Ruleset for $REPO has bypass actors configured, but --enforce-no-bypass was set."
-      FAILED=$((FAILED + 1))
-      FAILED_REPOS+=("$REPO (bypass enforced)")
-      continue
+      error "[$REPO] Has bypass actors configured, but --enforce-no-bypass was set."
+      echo "$REPO (bypass enforced)" >> "$STATE_DIR/failed.log"
+      return
     fi
   fi
 
@@ -310,21 +304,19 @@ for REPO in "${REPOS[@]}"; do
   LIVE_CANONICAL="$(printf '%s' "$LIVE_JSON" | canonicalize_ruleset)"
 
   if [[ "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" ]]; then
-    success "Already matches desired state for $REPO"
-    SKIPPED=$((SKIPPED + 1))
-    SKIPPED_REPOS+=("$REPO")
+    success "[$REPO] Already matches desired state"
+    echo "$REPO" >> "$STATE_DIR/skipped.log"
   else
     if [[ "$DEBUG_DIFF" == true ]]; then
-      echo "--- desired canonical ---"
+      echo "--- [$REPO] desired canonical ---"
       printf '%s\n' "$DESIRED_CANONICAL"
-      echo "--- live canonical ---"
+      echo "--- [$REPO] live canonical ---"
       printf '%s\n' "$LIVE_CANONICAL"
     fi
 
     if [[ "$DRY_RUN" == true ]]; then
-      warn "Would update ruleset for $REPO"
-      SKIPPED=$((SKIPPED + 1))
-      SKIPPED_REPOS+=("$REPO (dry-run:update)")
+      warn "[$REPO] Would update ruleset"
+      echo "$REPO (dry-run:update)" >> "$STATE_DIR/skipped.log"
     else
       if gh api \
         --method PUT \
@@ -332,30 +324,62 @@ for REPO in "${REPOS[@]}"; do
         -H "X-GitHub-Api-Version: 2022-11-28" \
         "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" \
         --input - <<<"$MERGED_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
-        success "Updated ruleset for $REPO"
-        UPDATED=$((UPDATED + 1))
-        UPDATED_REPOS+=("$REPO")
+        success "[$REPO] Updated ruleset"
+        echo "$REPO" >> "$STATE_DIR/updated.log"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
-          warn "Skipping $REPO (Archived)"
-          SKIPPED=$((SKIPPED + 1))
-          SKIPPED_REPOS+=("$REPO (archived)")
+          warn "[$REPO] Skipped (Archived)"
+          echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
         else
-          error "Failed to update ruleset for $REPO: $ERR_MSG"
-          FAILED=$((FAILED + 1))
-          FAILED_REPOS+=("$REPO")
+          error "[$REPO] Failed to update ruleset: $ERR_MSG"
+          echo "$REPO" >> "$STATE_DIR/failed.log"
         fi
       fi
     fi
   fi
+}
+
+echo "----------------------------------------"
+job_count=0
+for REPO in "${REPOS[@]}"; do
+  if [[ "$PARALLEL" -eq 1 ]]; then
+    process_repo "$REPO"
+  else
+    process_repo "$REPO" &
+    job_count=$((job_count + 1))
+    if [[ $job_count -ge $PARALLEL ]]; then
+      wait
+      job_count=0
+    fi
+  fi
 done
+wait # Catch any remaining jobs
+
+# Read states back into arrays safely
+read_state() {
+  local file="$STATE_DIR/$1"
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && echo "$line"
+    done < "$file"
+  fi
+}
+
+CREATED_REPOS=()
+while IFS= read -r line; do CREATED_REPOS+=("$line"); done < <(read_state "created.log")
+UPDATED_REPOS=()
+while IFS= read -r line; do UPDATED_REPOS+=("$line"); done < <(read_state "updated.log")
+SKIPPED_REPOS=()
+while IFS= read -r line; do SKIPPED_REPOS+=("$line"); done < <(read_state "skipped.log")
+FAILED_REPOS=()
+while IFS= read -r line; do FAILED_REPOS+=("$line"); done < <(read_state "failed.log")
 
 section "Final report"
-echo "Created: $CREATED"
-echo "Updated: $UPDATED"
-echo "Skipped: $SKIPPED"
-echo "Failed:  $FAILED"
+echo "Created: ${#CREATED_REPOS[@]}"
+echo "Updated: ${#UPDATED_REPOS[@]}"
+echo "Skipped: ${#SKIPPED_REPOS[@]}"
+echo "Failed:  ${#FAILED_REPOS[@]}"
 
 if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]}")"; fi
 if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]}")"; fi
