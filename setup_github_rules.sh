@@ -2,9 +2,14 @@
 set -e
 
 OWNER="vivek-tech-exp"
-REPOS=("borderless-buy" "my-fi" "commshub" "vivek-tech-resume")
 
-RULESET_PAYLOAD=$(cat <<INNER_EOF
+echo "Fetching public repositories for $OWNER..."
+# Dynamically fetch all public repo names as an array
+REPOS=($(gh repo list "$OWNER" --public --limit 100 --json name --jq '.[].name'))
+
+echo "Found ${#REPOS[@]} public repositories."
+
+RULESET_PAYLOAD=$(cat <<EOF
 {
   "name": "Protect Master",
   "target": "branch",
@@ -33,21 +38,22 @@ RULESET_PAYLOAD=$(cat <<INNER_EOF
     }
   ]
 }
-INNER_EOF
+EOF
 )
 
-echo "Starting ruleset setup for $OWNER..."
+echo "Starting ruleset setup..."
 
 for REPO in "${REPOS[@]}"; do
   echo "----------------------------------------"
   echo "Applying ruleset to: $REPO"
   
+  # || true ensures the script doesn't completely crash if one repo fails (e.g. if you lack permissions on one)
   gh api \
     --method POST \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     /repos/$OWNER/$REPO/rulesets \
-    --input - <<< "$RULESET_PAYLOAD"
+    --input - <<< "$RULESET_PAYLOAD" || echo "⚠️ Failed to update $REPO, skipping..."
     
   echo "✅ Successfully protected master/main on $REPO"
 done
