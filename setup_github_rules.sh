@@ -12,6 +12,8 @@ DRY_RUN=false
 DEBUG_DIFF=false
 YES=false
 QUIET=false
+ENFORCE_NO_BYPASS=false
+REMOVE_BYPASS=false
 
 SELECTED_REPOS=()
 TMP_ERR="$(mktemp "${TMPDIR:-/tmp}/gh_ruleset_err.XXXXXX")"
@@ -65,18 +67,13 @@ Scope:
   --include-archived          Include archived repos
 
 Behavior:
+  --enforce-no-bypass         Fail if the existing ruleset has bypass actors configured
+  --remove-bypass             Wipe existing bypass actors from the ruleset
   --dry-run                   Show actions without changing anything
   --debug-diff                Print canonical desired/live JSON when repo differs
   --yes                       Skip confirmation prompts
   --quiet                     Reduce non-essential output
   -h, --help                  Show this help
-
-Examples:
-  $0
-  $0 --repo my-fi
-  $0 --repos my-fi,borderless-buy
-  $0 --all --visibility all --dry-run
-  $0 --all --visibility private --yes
 EOF
 }
 
@@ -104,14 +101,19 @@ while [[ $# -gt 0 ]]; do
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
       MODE="selected"
-      SELECTED_REPOS+=("$2")
+      REPO_NAME="${2#*/}"
+      SELECTED_REPOS+=("$REPO_NAME")
       shift 2
       ;;
     --repos)
       [[ $# -ge 2 ]] || { error "--repos requires a value"; exit 1; }
       MODE="selected"
       IFS=',' read -r -a TMP_REPOS <<< "$2"
-      SELECTED_REPOS+=("${TMP_REPOS[@]}")
+      for r in "${TMP_REPOS[@]}"; do
+        cleaned="${r#"${r%%[![:space:]]*}"}"
+        cleaned="${cleaned%"${cleaned##*[![:space:]]}"}"
+        SELECTED_REPOS+=("${cleaned#*/}")
+      done
       shift 2
       ;;
     --owner)
@@ -130,6 +132,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --include-archived)
       INCLUDE_ARCHIVED=true
+      shift
+      ;;
+    --enforce-no-bypass)
+      ENFORCE_NO_BYPASS=true
+      shift
+      ;;
+    --remove-bypass)
+      REMOVE_BYPASS=true
       shift
       ;;
     --dry-run)
@@ -166,6 +176,11 @@ if [[ "$VISIBILITY" != "public" && "$VISIBILITY" != "private" && "$VISIBILITY" !
   exit 1
 fi
 
+if [[ "$ENFORCE_NO_BYPASS" == true && "$REMOVE_BYPASS" == true ]]; then
+  error "Cannot use --enforce-no-bypass and --remove-bypass at the same time."
+  exit 1
+fi
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
     error "Missing required command: $1"
@@ -181,7 +196,7 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
-read -r -d '' RULESET_PAYLOAD <<'EOF' || true
+read -r -d '' BASE_PAYLOAD <<'EOF' || true
 {
   "name": "Protect Master",
   "target": "branch",
@@ -189,8 +204,7 @@ read -r -d '' RULESET_PAYLOAD <<'EOF' || true
   "conditions": {
     "ref_name": {
       "include": [
-        "refs/heads/main",
-        "refs/heads/master"
+        "~DEFAULT_BRANCH"
       ],
       "exclude": []
     }
@@ -218,6 +232,7 @@ canonicalize_ruleset() {
       name,
       target,
       enforcement,
+      bypass_actors: ((.bypass_actors // []) | map({actor_id, actor_type, bypass_mode}) | sort_by(.actor_id, .actor_type)),
       ref_include: ((.conditions.ref_name.include // []) | sort),
       ref_exclude: ((.conditions.ref_name.exclude // []) | sort),
       rules: (
@@ -243,8 +258,6 @@ canonicalize_ruleset() {
     }
   '
 }
-
-DESIRED_CANONICAL="$(printf '%s' "$RULESET_PAYLOAD" | canonicalize_ruleset)"
 
 get_repos() {
   if [[ "$MODE" == "selected" ]]; then
@@ -276,13 +289,12 @@ confirm_scope() {
     return 0
   fi
 
-  if [[ "$MODE" == "all" && ( "$VISIBILITY" == "all" || "$VISIBILITY" == "private" || "$INCLUDE_ARCHIVED" == true || "$INCLUDE_FORKS" == true ) ]]; then
-    warn "You are about to apply rulesets with a broad scope."
+  if [[ "$MODE" == "all" && "$repo_count" -gt 1 ]]; then
+    warn "You are about to apply rulesets to multiple repositories ($repo_count)."
     echo "  Owner: $OWNER"
     echo "  Visibility: $VISIBILITY"
     echo "  Include forks: $INCLUDE_FORKS"
     echo "  Include archived: $INCLUDE_ARCHIVED"
-    echo "  Matched repos: $repo_count"
     read -r -p "Continue? [y/N] " answer
     [[ "$answer" =~ ^[Yy]$ ]] || return 1
   fi
@@ -296,9 +308,14 @@ print_summary_header() {
   echo "Include forks: $INCLUDE_FORKS"
   echo "Include archived: $INCLUDE_ARCHIVED"
   echo "Dry run: $DRY_RUN"
+  echo "Enforce no bypass: $ENFORCE_NO_BYPASS"
+  echo "Remove bypass: $REMOVE_BYPASS"
 }
 
-mapfile -t REPOS < <(get_repos)
+REPOS=()
+while IFS= read -r repo_name; do
+  [[ -n "$repo_name" ]] && REPOS+=("$repo_name")
+done < <(get_repos)
 
 if [[ ${#REPOS[@]} -eq 0 ]]; then
   warn "No repositories matched your filters."
@@ -328,8 +345,15 @@ for REPO in "${REPOS[@]}"; do
   echo "----------------------------------------"
   info "Processing: $REPO"
 
-  if ! RULESET_LIST="$(gh api "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
-    error "Failed to list rulesets for $REPO: $(cat "$TMP_ERR")"
+  if ! RULESET_LIST="$(gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
+    ERR_MSG="$(cat "$TMP_ERR")"
+    if [[ "$ERR_MSG" == *"archived"* ]]; then
+      warn "Skipping $REPO (Archived)"
+      SKIPPED=$((SKIPPED + 1))
+      SKIPPED_REPOS+=("$REPO (archived)")
+      continue
+    fi
+    error "Failed to list rulesets for $REPO: $ERR_MSG"
     FAILED=$((FAILED + 1))
     FAILED_REPOS+=("$REPO")
     continue
@@ -338,6 +362,8 @@ for REPO in "${REPOS[@]}"; do
   RULESET_ID="$(printf '%s' "$RULESET_LIST" | jq -r --arg name "$RULESET_NAME" '.[] | select(.name == $name) | .id' | head -n1)"
 
   if [[ -z "$RULESET_ID" || "$RULESET_ID" == "null" ]]; then
+    CREATE_PAYLOAD="$(printf '%s' "$BASE_PAYLOAD" | jq '. + {bypass_actors: []}')"
+
     if [[ "$DRY_RUN" == true ]]; then
       warn "Would create ruleset for $REPO"
       SKIPPED=$((SKIPPED + 1))
@@ -348,14 +374,21 @@ for REPO in "${REPOS[@]}"; do
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
         "/repos/$OWNER/$REPO/rulesets" \
-        --input - <<<"$RULESET_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
+        --input - <<<"$CREATE_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
         success "Created ruleset for $REPO"
         CREATED=$((CREATED + 1))
         CREATED_REPOS+=("$REPO")
       else
-        error "Failed to create ruleset for $REPO: $(cat "$TMP_ERR")"
-        FAILED=$((FAILED + 1))
-        FAILED_REPOS+=("$REPO")
+        ERR_MSG="$(cat "$TMP_ERR")"
+        if [[ "$ERR_MSG" == *"archived"* ]]; then
+          warn "Skipping $REPO (Archived)"
+          SKIPPED=$((SKIPPED + 1))
+          SKIPPED_REPOS+=("$REPO (archived)")
+        else
+          error "Failed to create ruleset for $REPO: $ERR_MSG"
+          FAILED=$((FAILED + 1))
+          FAILED_REPOS+=("$REPO")
+        fi
       fi
     fi
     continue
@@ -368,6 +401,33 @@ for REPO in "${REPOS[@]}"; do
     continue
   fi
 
+  if [[ "$ENFORCE_NO_BYPASS" == true ]]; then
+    BYPASS_COUNT="$(printf '%s' "$LIVE_JSON" | jq '.bypass_actors | length')"
+    if [[ "$BYPASS_COUNT" -gt 0 ]]; then
+      error "Ruleset for $REPO has bypass actors configured, but --enforce-no-bypass was set."
+      FAILED=$((FAILED + 1))
+      FAILED_REPOS+=("$REPO (bypass enforced)")
+      continue
+    fi
+  fi
+
+  MERGED_PAYLOAD="$(jq -n \
+    --argjson base "$BASE_PAYLOAD" \
+    --argjson live "$LIVE_JSON" \
+    --arg remove_bypass "$REMOVE_BYPASS" '
+    $base + {
+      bypass_actors: (if $remove_bypass == "true" then [] else ($live.bypass_actors // []) end),
+      rules: (
+        $base.rules | map(
+          . as $rule |
+          ($live.rules // []) | map(select(.type == $rule.type)) | .[0].id as $id |
+          if $id then $rule + {id: $id} else $rule end
+        )
+      )
+    }
+  ')"
+
+  DESIRED_CANONICAL="$(printf '%s' "$MERGED_PAYLOAD" | canonicalize_ruleset)"
   LIVE_CANONICAL="$(printf '%s' "$LIVE_JSON" | canonicalize_ruleset)"
 
   if [[ "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" ]]; then
@@ -392,14 +452,21 @@ for REPO in "${REPOS[@]}"; do
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
         "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" \
-        --input - <<<"$RULESET_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
+        --input - <<<"$MERGED_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
         success "Updated ruleset for $REPO"
         UPDATED=$((UPDATED + 1))
         UPDATED_REPOS+=("$REPO")
       else
-        error "Failed to update ruleset for $REPO: $(cat "$TMP_ERR")"
-        FAILED=$((FAILED + 1))
-        FAILED_REPOS+=("$REPO")
+        ERR_MSG="$(cat "$TMP_ERR")"
+        if [[ "$ERR_MSG" == *"archived"* ]]; then
+          warn "Skipping $REPO (Archived)"
+          SKIPPED=$((SKIPPED + 1))
+          SKIPPED_REPOS+=("$REPO (archived)")
+        else
+          error "Failed to update ruleset for $REPO: $ERR_MSG"
+          FAILED=$((FAILED + 1))
+          FAILED_REPOS+=("$REPO")
+        fi
       fi
     fi
   fi
