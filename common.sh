@@ -2,7 +2,7 @@
 # common.sh - Shared logic for GitHub ruleset scripts
 
 # --- Default Global Variables ---
-OWNER="vivek-tech-exp"
+OWNER=""
 MODE="all"
 VISIBILITY="public"
 INCLUDE_FORKS=false
@@ -65,6 +65,13 @@ check_auth() {
   if ! gh auth status >/dev/null 2>&1; then
     error "GitHub CLI is not authenticated. Run: gh auth login"
     exit 1
+  fi
+
+  if [[ -z "$OWNER" ]]; then
+    OWNER="$(gh api user --jq .login)" || {
+      error "Failed to retrieve default GitHub owner. Please specify with --owner."
+      exit 1
+    }
   fi
 }
 

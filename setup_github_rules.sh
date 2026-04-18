@@ -126,6 +126,7 @@ fi
 require_cmd gh
 require_cmd jq
 
+check_auth
 setup_state_dir
 
 if [[ "$AUDIT_MODE" == true ]]; then
@@ -325,12 +326,20 @@ process_repo() {
     local matched=false
     local match_name=""
     local ids
+    local first_live_json=""
+    local first_canonical=""
+
     ids="$(printf '%s' "$RULESET_LIST" | jq -r '.[].id')"
     for ID in $ids; do
        if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$REPO/rulesets/$ID" 2>"$TMP_ERR")"; then
          continue
        fi
        LIVE_CANONICAL="$(printf '%s' "$LIVE_JSON" | canonicalize_ruleset)"
+       
+       if [[ -z "$first_live_json" ]]; then
+         first_live_json="$LIVE_JSON"
+         first_canonical="$LIVE_CANONICAL"
+       fi
        
        for i in "${!POLICY_CANONICALS[@]}"; do
           if [[ "$LIVE_CANONICAL" == "${POLICY_CANONICALS[$i]}" ]]; then
@@ -346,6 +355,28 @@ process_repo() {
       record_state "matched" "$REPO ($match_name)"
     else
       echo -e "${YELLOW}[$REPO] OFF-MATRIX / CUSTOM${NC}"
+      
+      if [[ -n "$first_live_json" ]]; then
+        local live_name
+        live_name="$(printf '%s' "$first_live_json" | jq -r '.name // empty')"
+        
+        local target_idx=-1
+        for i in "${!POLICY_NAMES[@]}"; do
+          if [[ "${POLICY_NAMES[$i]}" == "$live_name" ]]; then
+            target_idx=$i
+            break
+          fi
+        done
+        
+        if [[ "$target_idx" -ge 0 ]]; then
+          echo -e "       ${BLUE}↳ Drift detected against matrix policy '${live_name}':${NC}"
+          diff -u <(printf '%s\n' "${POLICY_CANONICALS[$target_idx]}") <(printf '%s\n' "$first_canonical") | \
+            tail -n +3 | sed 's/^/         /' || true
+        else
+          echo -e "       ${BLUE}↳ Custom ruleset name: '${live_name}' (No matching matrix template)${NC}"
+        fi
+      fi
+
       record_state "off_matrix" "$REPO"
     fi
     return

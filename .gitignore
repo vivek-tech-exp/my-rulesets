@@ -1,2 +1,5 @@
 # Ignore ruleset script execution state
 .gh_state_*
+
+# Ignore local policy staging area
+policies/captured/
