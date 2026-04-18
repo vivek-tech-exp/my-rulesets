@@ -112,6 +112,7 @@ This toolset separates policy definitions from execution logic:
 | `--config <path>` | **[Required by setup]** Path to JSON policy file | - |
 | `--audit` | **[Fleet Discovery]** Check repos against all policies in `policies/` (replaces `--config`) | `false` |
 | `--capture-as <name>` | **[Policy Onboarding]** Fetch a ruleset, clean it, and save as JSON (replaces `--config`) | - |
+| `--force` | Force update a policy even if the local logic detects no changes | `false` |
 | `--all` | Apply to all matching repos | `true` |
 | `--repo <name>` | Apply to a single repository | - |
 | `--repos <a,b>` | Apply to comma-separated repositories | - |
