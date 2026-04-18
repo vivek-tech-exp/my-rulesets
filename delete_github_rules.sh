@@ -23,6 +23,7 @@ Scope:
   --include-archived          Include archived repos
 
 Target:
+  --config <path>             Path to JSON policy file (extracts name to delete)
   --name <name>               Delete only rulesets matching this name (default: all rulesets)
 
 Behavior:
@@ -38,6 +39,16 @@ for raw_arg in "$@"; do normalize_unicode_dashes "$raw_arg"; done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --config)
+      [[ $# -ge 2 ]] || { error "--config requires a value"; exit 1; }
+      if [[ ! -f "$2" ]]; then error "Config file not found: $2"; exit 1; fi
+      TARGET_RULESET="$(cat "$2" | jq -r .name 2>/dev/null || echo '')"
+      if [[ -z "$TARGET_RULESET" || "$TARGET_RULESET" == "null" ]]; then
+        error "Failed to extract 'name' from $2"
+        exit 1
+      fi
+      shift 2
+      ;;
     --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }

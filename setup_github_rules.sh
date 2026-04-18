@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 # Script-specific variables
-RULESET_NAME="Protect Master"
+CONFIG_FILE=""
 DEBUG_DIFF=false
 ENFORCE_NO_BYPASS=false
 REMOVE_BYPASS=false
@@ -16,7 +16,10 @@ usage() {
 GitHub repository ruleset manager
 
 Usage:
-  $0 [options]
+  $0 --config <path> [options]
+
+Config:
+  --config <path>             Path to the ruleset JSON policy file (Required)
 
 Scope:
   --all                       Apply to all matching repos (default)
@@ -43,6 +46,11 @@ for raw_arg in "$@"; do normalize_unicode_dashes "$raw_arg"; done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --config)
+      [[ $# -ge 2 ]] || { error "--config requires a value"; exit 1; }
+      CONFIG_FILE="$2"
+      shift 2
+      ;;
     --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
@@ -105,36 +113,17 @@ require_cmd jq
 check_auth
 setup_state_dir
 
-# Dynamic payload injection (unquoted EOF allows variable expansion)
-read -r -d '' BASE_PAYLOAD <<EOF || true
-{
-  "name": "$RULESET_NAME",
-  "target": "branch",
-  "enforcement": "active",
-  "conditions": {
-    "ref_name": {
-      "include": [
-        "~DEFAULT_BRANCH"
-      ],
-      "exclude": []
-    }
-  },
-  "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    {
-      "type": "pull_request",
-      "parameters": {
-        "dismiss_stale_reviews_on_push": true,
-        "require_code_owner_review": false,
-        "require_last_push_approval": false,
-        "required_approving_review_count": 1,
-        "required_review_thread_resolution": true
-      }
-    }
-  ]
-}
-EOF
+if [[ -z "$CONFIG_FILE" || ! -f "$CONFIG_FILE" ]]; then
+  error "You must specify a valid policy JSON file using --config"
+  exit 1
+fi
+
+BASE_PAYLOAD="$(cat "$CONFIG_FILE")"
+RULESET_NAME="$(printf '%s' "$BASE_PAYLOAD" | jq -r .name)"
+if [[ -z "$RULESET_NAME" || "$RULESET_NAME" == "null" ]]; then
+  error "Failed to extract 'name' from $CONFIG_FILE"
+  exit 1
+fi
 
 canonicalize_ruleset() {
   jq -S '
