@@ -128,7 +128,7 @@ read -r -d '' BASE_PAYLOAD <<EOF || true
         "dismiss_stale_reviews_on_push": true,
         "require_code_owner_review": false,
         "require_last_push_approval": false,
-        "required_approving_review_count": 0,
+        "required_approving_review_count": 1,
         "required_review_thread_resolution": true
       }
     }
@@ -229,7 +229,7 @@ process_repo() {
   
   info "[$REPO] Processing..."
 
-  if ! RULESET_LIST="$(gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
+  if ! RULESET_LIST="$(with_retry "$TMP_ERR" gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
       warn "[$REPO] Skipped (Archived)"
@@ -250,7 +250,7 @@ process_repo() {
       warn "[$REPO] Would create ruleset"
       record_state "skipped" "$REPO (dry-run:create)"
     else
-      if gh api \
+      if with_retry "$TMP_ERR" gh api \
         --method POST \
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -272,7 +272,7 @@ process_repo() {
     return
   fi
 
-  if ! LIVE_JSON="$(gh api "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" 2>"$TMP_ERR")"; then
+  if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" 2>"$TMP_ERR")"; then
     error "[$REPO] Failed to fetch ruleset $RULESET_ID: $(cat "$TMP_ERR")"
     record_state "failed" "$REPO"
     return
@@ -321,7 +321,7 @@ process_repo() {
       warn "[$REPO] Would update ruleset"
       record_state "skipped" "$REPO (dry-run:update)"
     else
-      if gh api \
+      if with_retry "$TMP_ERR" gh api \
         --method PUT \
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -360,13 +360,22 @@ for REPO in "${REPOS[@]}"; do
     pids+=($!)
     if [[ ${#pids[@]} -ge $PARALLEL ]]; then
       for pid in "${pids[@]}"; do
-        wait "$pid" || error "A background job failed to exit cleanly."
+        if ! wait "$pid"; then
+          error "A background job (PID: $pid) crashed unexpectedly."
+          record_state "failed" "System Crash (PID: $pid)"
+        fi
       done
       pids=()
     fi
   fi
 done
-for pid in "${pids[@]}"; do wait "$pid" || error "A background job failed to exit cleanly."; done
+
+for pid in "${pids[@]}"; do 
+  if ! wait "$pid"; then
+    error "A background job (PID: $pid) crashed unexpectedly."
+    record_state "failed" "System Crash (PID: $pid)"
+  fi
+done
 
 read_state() {
   local file="$STATE_DIR/$1"

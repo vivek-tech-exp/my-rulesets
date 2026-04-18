@@ -76,6 +76,7 @@ setup_state_dir() {
   STATE_DIR="${PWD}/.gh_state_${caller_script}_${OWNER}"
   mkdir -p "$STATE_DIR"
   
+  # Ensure log files exist so grep doesn't fail later
   touch "$STATE_DIR/created.log" "$STATE_DIR/updated.log" \
         "$STATE_DIR/skipped.log" "$STATE_DIR/failed.log" \
         "$STATE_DIR/deleted.log"
@@ -90,7 +91,7 @@ record_state() {
   printf '%s\n' "$text" >> "$STATE_DIR/${state_type}.log"
 }
 
-# --- Rate Limit Protection ---
+# --- Rate Limit Protection (Graceful Exit) ---
 check_rate_limit() {
   local rate_data
   if ! rate_data="$(gh api /rate_limit 2>/dev/null)"; then return 0; fi
@@ -122,6 +123,41 @@ check_rate_limit() {
     echo "----------------------------------------"
     exit 429
   fi
+}
+
+# --- Resilient API Execution (Backoff & Retry) ---
+with_retry() {
+  local tmp_err="$1"
+  shift
+  local max_attempts=3
+  local attempt=1
+  local backoff=2
+  local exit_code=0
+
+  while (( attempt <= max_attempts )); do
+    # Execute the passed command (e.g., gh api ...)
+    if "$@"; then
+      return 0
+    fi
+    exit_code=$?
+    
+    # Fast-fail for known permanent errors to avoid useless delays
+    if [[ -f "$tmp_err" ]]; then
+      if grep -qiE "archived|not found|bad credentials|requires authentication" "$tmp_err"; then
+        return "$exit_code"
+      fi
+    fi
+
+    if (( attempt == max_attempts )); then
+      return "$exit_code"
+    fi
+
+    # Output to stderr so it doesn't corrupt stdout variable captures
+    echo -e "\033[1;33m⚠\033[0m API transient error (Exit: $exit_code). Retrying in ${backoff}s (Attempt $attempt/$max_attempts)..." >&2
+    sleep "$backoff"
+    backoff=$(( backoff * 2 ))
+    attempt=$(( attempt + 1 ))
+  done
 }
 
 # --- GitHub API Helpers ---

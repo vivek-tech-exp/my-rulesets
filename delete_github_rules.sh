@@ -174,7 +174,7 @@ process_repo() {
   
   info "[$REPO] Processing..."
 
-  if ! RULESET_LIST="$(gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
+  if ! RULESET_LIST="$(with_retry "$TMP_ERR" gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
       warn "[$REPO] Skipped (Archived)"
@@ -201,7 +201,6 @@ process_repo() {
   local REPO_DELETED_COUNT=0
   local REPO_FAILED=false
 
-  # Fix: Prevent word-splitting on the ruleset IDs (Shellcheck SC2066)
   while IFS= read -r ID; do
     [[ -z "$ID" ]] && continue
     RULE_NAME="$(printf '%s' "$RULESET_LIST" | jq -r --arg id "$ID" '.[] | select(.id == ($id|tonumber)) | .name')"
@@ -210,7 +209,7 @@ process_repo() {
       warn "[$REPO] Would delete ruleset '$RULE_NAME' (ID: $ID)"
       REPO_DELETED_COUNT=$((REPO_DELETED_COUNT + 1))
     else
-      if gh api \
+      if with_retry "$TMP_ERR" gh api \
         --method DELETE \
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -259,13 +258,22 @@ for REPO in "${REPOS[@]}"; do
     pids+=($!)
     if [[ ${#pids[@]} -ge $PARALLEL ]]; then
       for pid in "${pids[@]}"; do
-        wait "$pid" || error "A background job failed to exit cleanly."
+        if ! wait "$pid"; then
+          error "A background job (PID: $pid) crashed unexpectedly."
+          record_state "failed" "System Crash (PID: $pid)"
+        fi
       done
       pids=()
     fi
   fi
 done
-for pid in "${pids[@]}"; do wait "$pid" || error "A background job failed to exit cleanly."; done
+
+for pid in "${pids[@]}"; do 
+  if ! wait "$pid"; then
+    error "A background job (PID: $pid) crashed unexpectedly."
+    record_state "failed" "System Crash (PID: $pid)"
+  fi
+done
 
 read_state() {
   local file="$STATE_DIR/$1"
