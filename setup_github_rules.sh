@@ -8,6 +8,8 @@ source "$SCRIPT_DIR/common.sh"
 # Script-specific variables
 CONFIG_FILE=""
 AUDIT_MODE=false
+CAPTURE_MODE=false
+CAPTURE_NAME=""
 DEBUG_DIFF=false
 ENFORCE_NO_BYPASS=false
 REMOVE_BYPASS=false
@@ -34,6 +36,7 @@ Scope:
 Behavior:
   --parallel <N>              Process N repos concurrently (default: 1)
   --audit                     Fleet discovery: check repos against all policies in policies/
+  --capture-as <name>         Fetch ruleset from --repo, clean it, and save it as <name>.json
   --enforce-no-bypass         Fail if the existing ruleset has bypass actors configured
   --remove-bypass             Wipe existing bypass actors from the ruleset
   --dry-run                   Show actions without changing anything
@@ -54,6 +57,12 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --audit) AUDIT_MODE=true; shift ;;
+    --capture-as)
+      [[ $# -ge 2 ]] || { error "--capture-as requires a policy name"; exit 1; }
+      CAPTURE_MODE=true
+      CAPTURE_NAME="$2"
+      shift 2
+      ;;
     --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
@@ -172,9 +181,9 @@ if [[ "$AUDIT_MODE" == true ]]; then
     error "Audit mode: No policies found in $SCRIPT_DIR/policies/"
     exit 1
   fi
-else
+elif [[ "$CAPTURE_MODE" == false ]]; then
   if [[ -z "$CONFIG_FILE" || ! -f "$CONFIG_FILE" ]]; then
-    error "You must specify a valid policy JSON file using --config (or run with --audit)"
+    error "You must specify a valid policy JSON file using --config (or run with --audit / --capture-as)"
     exit 1
   fi
 
@@ -218,6 +227,50 @@ done < <(get_repos)
 
 if [[ ${#REPOS[@]} -eq 0 ]]; then
   warn "No repositories matched your filters."
+  exit 0
+fi
+
+if [[ "$CAPTURE_MODE" == true ]]; then
+  if [[ "${#REPOS[@]}" -ne 1 ]]; then
+    error "--capture-as requires exactly one --repo to capture from."
+    exit 1
+  fi
+  
+  TARGET_REPO="${REPOS[0]}"
+  info "Capturing policy from $TARGET_REPO..."
+  
+  TMP_ERR="$STATE_DIR/tmp_err"
+  
+  if ! RULESET_LIST="$(with_retry "$TMP_ERR" gh api --paginate "/repos/$OWNER/$TARGET_REPO/rulesets" 2>"$TMP_ERR")"; then
+    error "Failed to list rulesets on $TARGET_REPO"
+    exit 1
+  fi
+  
+  FIRST_ID="$(printf '%s' "$RULESET_LIST" | jq -r '.[0].id // empty')"
+  if [[ -z "$FIRST_ID" ]]; then
+    error "No ruleset found on $TARGET_REPO to capture."
+    exit 1
+  fi
+  
+  if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$TARGET_REPO/rulesets/$FIRST_ID" 2>"$TMP_ERR")"; then
+    error "Failed to fetch ruleset $FIRST_ID: $(cat "$TMP_ERR")"
+    exit 1
+  fi
+  
+  CLEANED_JSON="$(printf '%s' "$LIVE_JSON" | jq --arg new_name "$CAPTURE_NAME" '
+    del(.id, .node_id, .repository_id, .created_at, .updated_at, .source_type, .source) |
+    .name = $new_name
+  ')"
+  
+  CAPTURE_DIR="$SCRIPT_DIR/policies/captured"
+  mkdir -p "$CAPTURE_DIR"
+  TARGET_FILE="$CAPTURE_DIR/${CAPTURE_NAME}.json"
+  
+  printf '%s\n' "$CLEANED_JSON" > "$TARGET_FILE"
+  
+  success "Policy captured! Saved to: policies/captured/${CAPTURE_NAME}.json"
+  echo "To scale this template to all repos, run:"
+  echo "./setup_github_rules.sh --config policies/captured/${CAPTURE_NAME}.json --all"
   exit 0
 fi
 
