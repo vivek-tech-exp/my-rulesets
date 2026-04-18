@@ -203,8 +203,15 @@ process_repo() {
         success "[$REPO] Deleted ruleset '$RULE_NAME'"
         REPO_DELETED_COUNT=$((REPO_DELETED_COUNT + 1))
       else
-        error "[$REPO] Failed to delete ruleset '$RULE_NAME': $(cat "$TMP_ERR")"
-        REPO_FAILED=true
+        ERR_MSG="$(cat "$TMP_ERR")"
+        if [[ "$ERR_MSG" == *"archived"* ]]; then
+          warn "[$REPO] Skipped (Archived)"
+          echo "$REPO (archived)" >> "$STATE_DIR/skipped.log"
+          break # The whole repo is read-only, stop trying to delete other IDs
+        else
+          error "[$REPO] Failed to delete ruleset '$RULE_NAME': $ERR_MSG"
+          REPO_FAILED=true
+        fi
       fi
     fi
   done
