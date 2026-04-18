@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/common.sh"
 
 # Script-specific variables
 CONFIG_FILE=""
+AUDIT_MODE=false
 DEBUG_DIFF=false
 ENFORCE_NO_BYPASS=false
 REMOVE_BYPASS=false
@@ -32,6 +33,7 @@ Scope:
 
 Behavior:
   --parallel <N>              Process N repos concurrently (default: 1)
+  --audit                     Fleet discovery: check repos against all policies in policies/
   --enforce-no-bypass         Fail if the existing ruleset has bypass actors configured
   --remove-bypass             Wipe existing bypass actors from the ruleset
   --dry-run                   Show actions without changing anything
@@ -51,6 +53,7 @@ while [[ $# -gt 0 ]]; do
       CONFIG_FILE="$2"
       shift 2
       ;;
+    --audit) AUDIT_MODE=true; shift ;;
     --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
@@ -110,19 +113,15 @@ fi
 
 require_cmd gh
 require_cmd jq
-check_auth
+
 setup_state_dir
 
-if [[ -z "$CONFIG_FILE" || ! -f "$CONFIG_FILE" ]]; then
-  error "You must specify a valid policy JSON file using --config"
-  exit 1
-fi
-
-BASE_PAYLOAD="$(cat "$CONFIG_FILE")"
-RULESET_NAME="$(printf '%s' "$BASE_PAYLOAD" | jq -r .name)"
-if [[ -z "$RULESET_NAME" || "$RULESET_NAME" == "null" ]]; then
-  error "Failed to extract 'name' from $CONFIG_FILE"
-  exit 1
+if [[ "$AUDIT_MODE" == true ]]; then
+  STATE_DIR="${PWD}/.gh_state_audit_github_rules_${OWNER}"
+  mkdir -p "$STATE_DIR"
+  touch "$STATE_DIR/matched.log" "$STATE_DIR/off_matrix.log" "$STATE_DIR/no_ruleset.log"
+  touch "$STATE_DIR/created.log" "$STATE_DIR/updated.log" "$STATE_DIR/skipped.log" "$STATE_DIR/failed.log" "$STATE_DIR/deleted.log"
+  info "Audit state directory override: $STATE_DIR"
 fi
 
 canonicalize_ruleset() {
@@ -158,6 +157,35 @@ canonicalize_ruleset() {
   '
 }
 
+if [[ "$AUDIT_MODE" == true ]]; then
+  POLICY_COUNT=0
+  POLICY_NAMES=()
+  POLICY_CANONICALS=()
+  if [[ -d "$SCRIPT_DIR/policies" ]]; then
+    while IFS= read -r -d '' p; do
+       POLICY_NAMES+=("$(jq -r .name < "$p")")
+       POLICY_CANONICALS+=("$(cat "$p" | canonicalize_ruleset)")
+       POLICY_COUNT=$((POLICY_COUNT + 1))
+    done < <(find "$SCRIPT_DIR/policies" -type f -name "*.json" -print0)
+  fi
+  if [[ "$POLICY_COUNT" -eq 0 ]]; then
+    error "Audit mode: No policies found in $SCRIPT_DIR/policies/"
+    exit 1
+  fi
+else
+  if [[ -z "$CONFIG_FILE" || ! -f "$CONFIG_FILE" ]]; then
+    error "You must specify a valid policy JSON file using --config (or run with --audit)"
+    exit 1
+  fi
+
+  BASE_PAYLOAD="$(cat "$CONFIG_FILE")"
+  RULESET_NAME="$(printf '%s' "$BASE_PAYLOAD" | jq -r .name)"
+  if [[ -z "$RULESET_NAME" || "$RULESET_NAME" == "null" ]]; then
+    error "Failed to extract 'name' from $CONFIG_FILE"
+    exit 1
+  fi
+fi
+
 confirm_scope() {
   local repo_count="$1"
   if [[ "$YES" == true || "$DRY_RUN" == true ]]; then return 0; fi
@@ -179,6 +207,7 @@ print_summary_header() {
   echo "Mode: $MODE"
   echo "Visibility: $VISIBILITY"
   echo "Parallel jobs: $PARALLEL"
+  echo "Audit mode: $AUDIT_MODE"
   echo "Dry run: $DRY_RUN"
 }
 
@@ -208,7 +237,7 @@ fi
 process_repo() {
   local REPO="$1"
   
-  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/{created,updated,skipped,failed,deleted}.log 2>/dev/null; then
+  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,off_matrix,no_ruleset}.log 2>/dev/null; then
     info "[$REPO] Already processed in a previous run. Resuming..."
     return 0
   fi
@@ -227,6 +256,42 @@ process_repo() {
     fi
     error "[$REPO] Failed to list rulesets: $ERR_MSG"
     record_state "failed" "$REPO"
+    return
+  fi
+
+  if [[ "$AUDIT_MODE" == true ]]; then
+    if [[ -z "$RULESET_LIST" || "$RULESET_LIST" == "[]" ]]; then
+      echo -e "${BLUE}[$REPO] NO RULESET FOUND${NC}"
+      record_state "no_ruleset" "$REPO"
+      return
+    fi
+    
+    local matched=false
+    local match_name=""
+    local ids
+    ids="$(printf '%s' "$RULESET_LIST" | jq -r '.[].id')"
+    for ID in $ids; do
+       if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$REPO/rulesets/$ID" 2>"$TMP_ERR")"; then
+         continue
+       fi
+       LIVE_CANONICAL="$(printf '%s' "$LIVE_JSON" | canonicalize_ruleset)"
+       
+       for i in "${!POLICY_CANONICALS[@]}"; do
+          if [[ "$LIVE_CANONICAL" == "${POLICY_CANONICALS[$i]}" ]]; then
+             matched=true
+             match_name="${POLICY_NAMES[$i]}"
+             break 2
+          fi
+       done
+    done
+    
+    if [[ "$matched" == true ]]; then
+      echo -e "${GREEN}[$REPO] MATCHED: $match_name${NC}"
+      record_state "matched" "$REPO ($match_name)"
+    else
+      echo -e "${YELLOW}[$REPO] OFF-MATRIX / CUSTOM${NC}"
+      record_state "off_matrix" "$REPO"
+    fi
     return
   fi
 
@@ -375,22 +440,47 @@ read_state() {
   fi
 }
 
-CREATED_REPOS=()
-while IFS= read -r line; do CREATED_REPOS+=("$line"); done < <(read_state "created.log")
-UPDATED_REPOS=()
-while IFS= read -r line; do UPDATED_REPOS+=("$line"); done < <(read_state "updated.log")
-SKIPPED_REPOS=()
-while IFS= read -r line; do SKIPPED_REPOS+=("$line"); done < <(read_state "skipped.log")
-FAILED_REPOS=()
-while IFS= read -r line; do FAILED_REPOS+=("$line"); done < <(read_state "failed.log")
+if [[ "$AUDIT_MODE" == true ]]; then
+  MATCHED_REPOS=()
+  while IFS= read -r line; do MATCHED_REPOS+=("$line"); done < <(read_state "matched.log")
+  OFF_MATRIX_REPOS=()
+  while IFS= read -r line; do OFF_MATRIX_REPOS+=("$line"); done < <(read_state "off_matrix.log")
+  NO_RULESET_REPOS=()
+  while IFS= read -r line; do NO_RULESET_REPOS+=("$line"); done < <(read_state "no_ruleset.log")
+  SKIPPED_REPOS=()
+  while IFS= read -r line; do SKIPPED_REPOS+=("$line"); done < <(read_state "skipped.log")
+  FAILED_REPOS=()
+  while IFS= read -r line; do FAILED_REPOS+=("$line"); done < <(read_state "failed.log")
 
-section "Final report"
-echo "Created: ${#CREATED_REPOS[@]}"
-echo "Updated: ${#UPDATED_REPOS[@]}"
-echo "Skipped: ${#SKIPPED_REPOS[@]}"
-echo "Failed:  ${#FAILED_REPOS[@]}"
+  section "Fleet Discovery Summary"
+  echo "Matched:    ${#MATCHED_REPOS[@]}"
+  echo "Off-Matrix: ${#OFF_MATRIX_REPOS[@]}"
+  echo "No Ruleset: ${#NO_RULESET_REPOS[@]}"
+  echo "Skipped:    ${#SKIPPED_REPOS[@]}"
+  echo "Failed:     ${#FAILED_REPOS[@]}"
+  
+  if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched repos:\n$(printf ' - %s\n' "${MATCHED_REPOS[@]}")"; fi
+  if [[ ${#OFF_MATRIX_REPOS[@]} -gt 0 ]]; then echo -e "\nOff-Matrix repos:\n$(printf ' - %s\n' "${OFF_MATRIX_REPOS[@]}")"; fi
+  if [[ ${#NO_RULESET_REPOS[@]} -gt 0 ]]; then echo -e "\nNo Ruleset repos:\n$(printf ' - %s\n' "${NO_RULESET_REPOS[@]}")"; fi
+  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]}")"; exit 1; fi
+else
+  CREATED_REPOS=()
+  while IFS= read -r line; do CREATED_REPOS+=("$line"); done < <(read_state "created.log")
+  UPDATED_REPOS=()
+  while IFS= read -r line; do UPDATED_REPOS+=("$line"); done < <(read_state "updated.log")
+  SKIPPED_REPOS=()
+  while IFS= read -r line; do SKIPPED_REPOS+=("$line"); done < <(read_state "skipped.log")
+  FAILED_REPOS=()
+  while IFS= read -r line; do FAILED_REPOS+=("$line"); done < <(read_state "failed.log")
 
-if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]}")"; fi
-if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]}")"; fi
-if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then echo -e "\nSkipped repos:\n$(printf ' - %s\n' "${SKIPPED_REPOS[@]}")"; fi
-if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]}")"; exit 1; fi
+  section "Final report"
+  echo "Created: ${#CREATED_REPOS[@]}"
+  echo "Updated: ${#UPDATED_REPOS[@]}"
+  echo "Skipped: ${#SKIPPED_REPOS[@]}"
+  echo "Failed:  ${#FAILED_REPOS[@]}"
+
+  if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]}")"; fi
+  if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]}")"; fi
+  if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then echo -e "\nSkipped repos:\n$(printf ' - %s\n' "${SKIPPED_REPOS[@]}")"; fi
+  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]}")"; exit 1; fi
+fi
