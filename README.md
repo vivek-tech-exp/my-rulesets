@@ -15,6 +15,7 @@ Engineered for **safety**, **idempotency**, and **scalability**, featuring paral
 - [Architecture](#-architecture)
 - [Requirements](#-requirements)
 - [Usage Examples](#-usage-examples)
+- [CI/CD Integration](#-cicd-integration-governance-as-code)
 - [Available Flags](#-available-flags)
 - [Operational Warnings](#-operational-warning-api-rate-limits)
 - [Technical Notes](#-technical-notes)
@@ -102,6 +103,21 @@ This toolset separates policy definitions from execution logic:
 # Nuke Option: Delete ALL rulesets on a specific repository
 ./delete_github_rules.sh --repo my-test-repo
 ```
+
+---
+
+## 🚀 CI/CD Integration (Governance-as-Code)
+
+You can transition `my-rulesets` from a local CLI tool to a fully automated GitOps platform by hooking it directly into GitHub Actions.
+
+This built-in workflow is designed as a "Set and Forget" solution: any merge to the `policies/` directory will automatically trigger a fleet-wide synchronization.
+
+### Setup Instructions
+1. Navigate to your Developer Settings and generate a **Personal Access Token (Classic)** with `repo` and `admin:org` scopes.
+2. In your `my-rulesets` repository, go to **Settings > Secrets and variables > Actions**.
+3. Create a **New repository secret** named `GH_PAT` and paste your token.
+
+Once set up, whenever a collaborator modifies a policy inside the `policies/` directory, GitHub Actions will silently and automatically propagate that structural change across your fleet!
 
 ---
 
