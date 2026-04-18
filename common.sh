@@ -116,6 +116,11 @@ check_rate_limit() {
 
     warn "GitHub will reset your quota at $reset_str."
     warn "The script has safely saved its state to $STATE_DIR."
+    warn "Waiting for running background jobs to finish securely..."
+    
+    # Wait for the currently active parallel jobs to finish and save state
+    wait 
+    
     warn "Simply run the exact same command later to resume from where it left off."
     echo "----------------------------------------"
     
