@@ -19,7 +19,7 @@ jobs:
         run: echo "${{ secrets.GH_PAT }}" | gh auth login --with-token
 
       - name: Make script executable
-        run: chmod +x ./rules.sh ./internal/*.sh
+        run: chmod +x ./gh-ruleset-sync ./internal/*.sh
 
       - name: Execute Global Sync
-        run: ./rules.sh sync --config policies/org/strict.json --all --yes --quiet --parallel 2
+        run: ./gh-ruleset-sync sync --config policies/org/strict.json --all --yes --quiet --parallel 2

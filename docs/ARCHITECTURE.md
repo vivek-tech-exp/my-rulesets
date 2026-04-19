@@ -1,12 +1,12 @@
 # System Architecture & Technical Specifications
 
-The `my-rulesets` tool is engineered for safety, idempotency, and scalability at an enterprise level. It strictly separates policy definitions from execution routing.
+The `ruleset-sync` tool is engineered for safety, idempotency, and scalability at an enterprise level. It strictly separates policy definitions from execution routing.
 
 ## 🏗️ Directory Map & Component Design
 
 | Component | Description |
 |:---|:---|
-| **`rules.sh`** | **The Unified Entry Point**: A thin routing layer that translates user intents (`sync`, `audit`, `capture`, `nuke`) into execution flows. |
+| **`gh-ruleset-sync`** | **The Unified Entry Point**: A thin routing layer that translates user intents (`sync`, `audit`, `capture`, `nuke`) into execution flows. |
 | **`internal/common.sh`**| **Shared Infrastructure**: Handles API helpers, logging, error handling, rate-limit evaluation, and parallel execution state management. |
 | **`internal/setup_github_rules.sh`**| **The Sync Engine**: Translates and synchronizes rulesets dynamically loaded from JSON policy configurations against live repository rule layouts. |
 | **`internal/delete_github_rules.sh`**| **The Cleanup Engine**: Safely queries and deletes targeted rulesets leveraging pre-flight checks to prevent empty destructive loops at scale. |
