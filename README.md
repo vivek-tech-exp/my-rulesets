@@ -57,11 +57,13 @@ Avoid managing raw JSON by using the built-in Smart Matrix. It maps three **Scop
 
 | Tier | `--individual` | `--team` | `--org` |
 | :--- | :--- | :--- | :--- |
-| **`--loose`** | Basic protection; allows force-pushes for the owner. | Low friction; focus on preventing accidental deletions. | Standard base; minimal restrictions for broad visibility. |
-| **`--moderate`** | **Recommended.** Linear history required; no force-pushes. | Team-wide safety; requires status checks or PR reviews. | Org-wide enforced; 1 review required for all changes. |
-| **`--strict`** | Maximum lockdown; no bypasses allowed. | High-security; requires multiple reviews and signed commits. | Maximum governance; zero bypass actors. |
+| **`--loose`** | Blocks branch deletion and force-pushes on the default branch. | Blocks deletion and force-pushes; requires 1 PR approval with resolved review threads. | Same as team loose, plus signed commits. |
+| **`--moderate`** | Same as individual loose today: blocks deletion and force-pushes on the default branch. | Same as team loose today: blocks deletion and force-pushes; requires 1 PR approval with resolved review threads. | Blocks deletion and force-pushes; requires signed commits and 2 PR approvals with resolved review threads. |
+| **`--strict`** | Adds signed commits and explicitly enforces zero bypass actors. | Requires signed commits, 2 PR approvals, resolved review threads, and zero bypass actors. | Requires signed commits, 2 PR approvals, code owner review, resolved review threads, and zero bypass actors. |
 
 *Note: Append `--tags` to any matrix command to target Tag Rulesets instead of Branch Rulesets.*
+
+The JSON files in `policies/` are the source of truth. Some loose and moderate tiers intentionally overlap in the current matrix.
 
 ---
 

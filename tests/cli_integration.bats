@@ -128,6 +128,44 @@ sample_live_old_json() {
   '
 }
 
+sample_live_with_bypass_json() {
+  jq -nc '
+    {
+      id: 303,
+      node_id: "RRS_bypass",
+      repository_id: 77,
+      created_at: "2024-02-01T00:00:00Z",
+      updated_at: "2024-02-02T00:00:00Z",
+      name: "Protect main",
+      target: "branch",
+      enforcement: "active",
+      conditions: {
+        ref_name: {
+          include: ["~DEFAULT_BRANCH"],
+          exclude: []
+        }
+      },
+      bypass_actors: [
+        {
+          actor_id: 1,
+          actor_type: "RepositoryRole",
+          bypass_mode: "always"
+        }
+      ],
+      rules: [
+        {
+          id: 700,
+          type: "deletion"
+        },
+        {
+          id: 701,
+          type: "non_fast_forward"
+        }
+      ]
+    }
+  '
+}
+
 @test "audit marks repos as matched with extras when managed and unmanaged rulesets coexist" {
   local policy
   local policy_title
@@ -190,6 +228,28 @@ sample_live_old_json() {
   assert_output --partial "Already matches desired state"
   assert_api_call_count PUT "/repos/acme/demo/rulesets/101" 0
   assert_equal "$(read_state_entries acme setup_github_rules skipped)" "demo|"
+}
+
+@test "strict-style policies with explicit empty bypass actors wipe live bypasses on sync" {
+  local policy_file
+  local policy_json
+  local request_body
+
+  policy_json='{"name":"Protect main","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"bypass_actors":[],"rules":[{"type":"deletion"},{"type":"non_fast_forward"}]}'
+  policy_file="$(write_policy_file "strict-bypass-policy" "$policy_json")"
+
+  mock_owner_type "acme" "Organization"
+  mock_rate_limit_ok
+  mock_repo_list "acme" "demo"
+  mock_api_response GET "/repos/acme/demo/rulesets" '[{"id":303,"name":"Protect main"}]'
+  mock_api_response GET "/repos/acme/demo/rulesets/303" "$(sample_live_with_bypass_json)"
+
+  run_ruleset_sync sync --config "$policy_file" --owner acme --repo demo --yes
+
+  assert_success
+  assert_api_call_count PUT "/repos/acme/demo/rulesets/303" 1
+  request_body="$(last_api_body PUT "/repos/acme/demo/rulesets/303")"
+  assert_equal "$(printf '%s' "$request_body" | jq -c '.bypass_actors')" "[]"
 }
 
 @test "sync rollback replays the saved backup through PUT" {

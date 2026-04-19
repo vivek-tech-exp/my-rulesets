@@ -10,6 +10,7 @@
       "exclude": []
     }
   },
+  "bypass_actors": [],
   "rules": [
     {
       "type": "deletion"

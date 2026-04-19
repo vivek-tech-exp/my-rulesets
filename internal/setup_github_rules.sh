@@ -654,7 +654,15 @@ process_repo() {
     --argjson live "$LIVE_JSON" \
     --arg remove_bypass "$REMOVE_BYPASS" '
     $base + {
-      bypass_actors: (if $remove_bypass == "true" then [] else ($live.bypass_actors // []) end),
+      bypass_actors: (
+        if $remove_bypass == "true" then
+          []
+        elif (($base.bypass_actors // null) | type) == "array" then
+          $base.bypass_actors
+        else
+          ($live.bypass_actors // [])
+        end
+      ),
       rules: (
         $base.rules | map(
           . as $rule |
