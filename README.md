@@ -11,9 +11,11 @@
 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Safe Rollout](#safe-rollout)
 - [Smart Matrix](#the-smart-matrix)
 - [Operator's Playbook](#the-operators-playbook)
 - [Command Reference](#command-reference)
+- [Troubleshooting & Common Outcomes](#troubleshooting--common-outcomes)
 - [GitOps & CI/CD](#gitops--cicd)
 - [Why It Stays Safe](#why-it-stays-safe)
 
@@ -30,6 +32,13 @@ Two habits will save you pain:
 
 - Use `--dry-run` before write-heavy operations.
 - Use `--parallel 20` for audits and `--parallel 2` for sync/nuke runs.
+
+### Access and Auth
+
+- Personal repos: a normal `gh auth login` session is usually enough.
+- Org or private-repo operations: use an account or token that can administer rulesets on the target repositories.
+- CI automation: use a classic PAT with `repo`, plus `admin:org` when you manage organization-owned repositories.
+- Multi-org or non-interactive runs: pass `--owner` explicitly. It removes ambiguity and avoids prompt-related failures.
 
 ## Quick Start
 
@@ -50,6 +59,42 @@ gh ruleset-sync audit --owner your-org --all --visibility public --parallel 20
 ```bash
 gh ruleset-sync sync --org --moderate --tags --all --owner your-org --yes --parallel 2
 ```
+
+## Safe Rollout
+
+If you are responsible for more than one repo, do not jump straight from "looks useful" to "all repos."
+
+1. Prove the policy on one repository.
+
+```bash
+gh ruleset-sync sync --org --strict --repo one-repo --owner your-org --dry-run
+```
+
+2. Apply it to a small pilot group.
+
+```bash
+gh ruleset-sync sync --org --strict --repos "repo-a,repo-b,repo-c" --owner your-org --yes --parallel 2
+```
+
+3. Audit the wider fleet before the full rollout.
+
+```bash
+gh ruleset-sync audit --owner your-org --all --parallel 20
+```
+
+4. Scale to the full fleet only after the pilot looks correct.
+
+```bash
+gh ruleset-sync sync --org --strict --all --owner your-org --yes --parallel 2
+```
+
+5. Keep the undo command handy.
+
+```bash
+gh ruleset-sync sync --owner your-org --rollback --yes
+```
+
+That sequence is the safest default for startups, small teams, and engineers juggling five jobs at once.
 
 ## The Smart Matrix
 
@@ -265,6 +310,35 @@ gh ruleset-sync nuke --repo my-test-repo --owner your-org --yes
 ### Capture Behavior
 
 If you run `capture` interactively and the repo contains multiple rulesets, the tool can prompt you to choose which one to save. In non-interactive or CI contexts, it falls back to the first ruleset with a warning unless you pass `--capture-from`.
+
+## Troubleshooting & Common Outcomes
+
+### Audit Result Meanings
+
+- `MATCHED`: the repo matches one of the known policies in `policies/`.
+- `MATCHED WITH EXTRAS`: the repo has one managed ruleset plus additional unmanaged rulesets. This is usually "mostly fine, but somebody added sidecar rules in the UI."
+- `OFF-MATRIX / CUSTOM`: the repo has rulesets, but they do not match the local Smart Matrix. Treat this as drift or a custom policy decision that should be made explicit.
+- `NO RULESET FOUND`: the repo has no ruleset at all. This is the easiest gap to fix and usually the highest-signal audit output for small teams.
+
+### Common Operator Problems
+
+- Multiple organizations or non-interactive shell:
+  Pass `--owner` explicitly. This avoids auth-selection ambiguity and is the right default for CI and scripted runs.
+- Name collision during sync:
+  If the tool reports multiple rulesets with the same name, stop and clean that repo up manually first. The sync engine refuses to overwrite in that state on purpose.
+- `MATCHED WITH EXTRAS` during audit:
+  Decide whether the extra rulesets are intentional. If yes, leave them. If not, capture the desired state or remove the junk ruleset with `nuke --name`.
+- Rollback found nothing:
+  Rollback is session-based. It only works when the current owner has state and backups under `~/.config/gh-ruleset-sync/state/`.
+- Team cannot push after a sync:
+  Use the rollback command first, then adjust the policy file or Smart Matrix tier and retry with `--dry-run`.
+
+### Practical Defaults
+
+- Audits: `--parallel 20`
+- Sync and nuke: `--parallel 2`
+- First run on any meaningful fleet: add `--dry-run`
+- Any scripted or multi-org run: add `--owner`
 
 ## GitOps & CI/CD
 
