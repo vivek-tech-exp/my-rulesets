@@ -218,7 +218,11 @@ confirm_scope() {
   if [[ "$YES" == true || "$DRY_RUN" == true ]]; then return 0; fi
 
   if [[ "$MODE" == "all" && "$repo_count" -gt 1 ]]; then
-    warn "You are about to apply rulesets to multiple repositories ($repo_count)."
+    if [[ "$AUDIT_MODE" == true ]]; then
+      info "You are about to scan multiple repositories for drift ($repo_count)."
+    else
+      warn "You are about to apply rulesets to multiple repositories ($repo_count)."
+    fi
     echo "  Owner: $OWNER"
     echo "  Visibility: $VISIBILITY"
     echo "  Include forks: $INCLUDE_FORKS"
@@ -366,7 +370,7 @@ process_repo() {
       return
     fi
     error "[$REPO] Failed to fetch rulesets: $ERR_MSG"
-    record_state "failed" "$REPO|API error"
+    record_state "failed" "$REPO|$ERR_MSG"
     return
   fi
 
@@ -461,8 +465,6 @@ process_repo() {
         record_state "off_matrix" "$REPO|gh ruleset-sync capture \"unknown\" --repo $REPO"
       fi
     else
-      # m_count > 1 and u_count == 0? 
-      # Still technically "Extras" or non-standard configuration
       echo -e "${YELLOW}[$REPO] MATCHED WITH EXTRAS (Multiple Policies)${NC}"
       info "       ↳ Managed: ${managed_rulesets[*]}"
       record_state "matched_with_extras" "$REPO|$match_name (Multiple Managed: $m_count)"
@@ -659,38 +661,51 @@ if [[ "$AUDIT_MODE" == true ]]; then
   echo "Skipped:         ${#SKIPPED_REPOS[@]}"
   echo "Failed:          ${#FAILED_REPOS[@]}"
   
-  if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched repos:\n$(printf ' - %s\n' "${MATCHED_REPOS[@]//|/ (} )")"; fi
-  if [[ ${#MATCHED_EXTRAS_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched with Extras (Warnings):\n$(printf ' - %s\n' "${MATCHED_EXTRAS_REPOS[@]//|/ (} )")"; fi
+  if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then 
+    echo -e "\nMatched repos:"
+    for item in "${MATCHED_REPOS[@]}"; do
+      r="${item%%|*}"
+      m="${item#*|}"
+      echo " - $r ($m)"
+    done
+  fi
+
+  if [[ ${#MATCHED_EXTRAS_REPOS[@]} -gt 0 ]]; then 
+    echo -e "\nMatched with Extras (Warnings):"
+    for item in "${MATCHED_EXTRAS_REPOS[@]}"; do
+      r="${item%%|*}"
+      m="${item#*|}"
+      echo " - $r ($m)"
+    done
+  fi
+
   if [[ ${#OFF_MATRIX_REPOS[@]} -gt 0 ]]; then
     echo -e "\nOff-Matrix repos (Action Required):"
     for item in "${OFF_MATRIX_REPOS[@]}"; do
-      # Item format is `|repo|fix command`
-      # Strip leading `|`
-      item="${item#|}"
       r="${item%%|*}"
       cmd="${item#*|}"
-      if [[ "$r" != "$cmd" ]]; then
-        echo -e " - $r\n     ↳ Fix: $cmd"
-      else
-        echo " - $r"
-      fi
+      echo -e " - $r\n     ↳ Action: $cmd"
     done
   fi
+
   if [[ ${#NO_RULESET_REPOS[@]} -gt 0 ]]; then
     echo -e "\nNo Ruleset repos (Action Recommended):"
     for item in "${NO_RULESET_REPOS[@]}"; do
-      # Item format is `|repo|fix command`
-      item="${item#|}"
       r="${item%%|*}"
       cmd="${item#*|}"
-      if [[ -n "$cmd" && "$r" != "$cmd" ]]; then
-        echo -e " - $r\n     ↳ Suggestion: $cmd"
-      else
-        echo " - $r"
-      fi
+      echo -e " - $r\n     ↳ Suggestion: $cmd"
     done
   fi
-  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]//|/ (} )")"; exit 1; fi
+
+  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then 
+    echo -e "\nFailed repos:"
+    for item in "${FAILED_REPOS[@]}"; do
+      r="${item%%|*}"
+      msg="${item#*|}"
+      echo -e " - $r\n     ↳ Error: $msg"
+    done
+    exit 1
+  fi
 else
   CREATED_REPOS=()
   while IFS= read -r line; do CREATED_REPOS+=("$line"); done < <(read_state "created.log")
@@ -710,5 +725,13 @@ else
   if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]//|/}")"; fi
   if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]//|/}")"; fi
   if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then echo -e "\nSkipped repos:\n$(printf ' - %s\n' "${SKIPPED_REPOS[@]//|/ (} )")"; fi
-  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]//|/ (} )")"; exit 1; fi
+  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then 
+    echo -e "\nFailed repos:"
+    for item in "${FAILED_REPOS[@]}"; do
+      r="${item%%|*}"
+      msg="${item#*|}"
+      echo -e " - $r\n     ↳ Error: $msg"
+    done
+    exit 1
+  fi
 fi
