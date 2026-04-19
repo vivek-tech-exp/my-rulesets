@@ -1,0 +1,18 @@
+{
+  "name": "Individual - Tag Moderate",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "refs/tags/*"
+      ],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    }
+  ]
+}
