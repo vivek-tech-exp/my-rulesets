@@ -1,0 +1,33 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  bats:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq shellcheck git
+
+      - name: Install Bats libraries
+        run: |
+          mkdir -p "$RUNNER_TEMP/bats-libs"
+          git clone --depth 1 https://github.com/bats-core/bats-support.git "$RUNNER_TEMP/bats-libs/bats-support"
+          git clone --depth 1 https://github.com/bats-core/bats-assert.git "$RUNNER_TEMP/bats-libs/bats-assert"
+
+      - name: ShellCheck
+        run: |
+          find . -type f \( -name '*.sh' -o -name '*.bash' \) -print0 | xargs -0 shellcheck -x -S warning
+
+      - name: Run Bats
+        env:
+          BATS_LIB_PATH: ${{ runner.temp }}/bats-libs
+        run: bats --recursive tests

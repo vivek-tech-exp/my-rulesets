@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 # Robust source pathing
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,6 +59,41 @@ Behavior:
   -h, --help                  Show this help
 EOF
 }
+
+canonicalize_ruleset() {
+  jq -S '
+    # 1. Volatile Metadata Blacklist
+    del(.id, .node_id, .repository_id, .created_at, .updated_at, .source_type, .source, ._links, .current_user_can_bypass) |
+
+    # 2. Normalize Bypass Actors (handle missing/null as empty list)
+    .bypass_actors = (.bypass_actors // [] | map(del(.id)) | sort_by(.actor_id, .actor_type)) |
+
+    # 3. Stable Rules (Future-proof: preserves all unknown fields/parameters)
+    if .rules then
+      .rules |= (map(if type == "object" then del(.id) else . end) | sort_by(.type))
+    else . end |
+
+    # 4. Stable/Normalized Conditions
+    if .conditions.ref_name then
+      if .conditions.ref_name.include then .conditions.ref_name.include |= sort else . end |
+      if .conditions.ref_name.exclude then .conditions.ref_name.exclude |= sort else . end
+    else . end
+  '
+}
+
+read_state() {
+  local file="$STATE_DIR/$1"
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line; do
+      if [[ -n "$line" ]]; then
+        echo "${line#|}"
+      fi
+    done < "$file"
+  fi
+}
+
+main() {
+set -euo pipefail
 
 for raw_arg in "$@"; do normalize_unicode_dashes "$raw_arg"; done
 
@@ -196,89 +230,72 @@ if [[ "$ROLLBACK_MODE" == true ]]; then
 
   echo "----------------------------------------"
 
-  for item in "${UPDATED_REPOS[@]}"; do
-    REPO="${item%%|*}"
-    NAME="${item#*|}"
-    SAFE_REPO="${REPO//\//_}"
-    
-    # Discovery: find the backup corresponding to this repo
-    # If NAME is present, we try a specific match, otherwise use head -n1
-    if [[ -n "$NAME" && "$NAME" != "$REPO" ]]; then
-       SAFE_RULESET="${NAME//\//_}"
-       BACKUP_FILE="$STATE_DIR/backups/${SAFE_REPO}__${SAFE_RULESET}.json"
-    else
-       BACKUP_FILE="$(ls "$STATE_DIR/backups/${SAFE_REPO}__"*.json 2>/dev/null | head -n1)"
-    fi
-    
-    if [[ -z "$BACKUP_FILE" || ! -f "$BACKUP_FILE" ]]; then
-      error "[$REPO] Backup file missing in $STATE_DIR/backups/. Cannot restore."
-      continue
-    fi
+  if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then
+    for item in "${UPDATED_REPOS[@]}"; do
+      REPO="${item%%|*}"
+      NAME="${item#*|}"
+      SAFE_REPO="${REPO//\//_}"
+      
+      # Discovery: find the backup corresponding to this repo
+      # If NAME is present, we try a specific match, otherwise use head -n1
+      if [[ -n "$NAME" && "$NAME" != "$REPO" ]]; then
+         SAFE_RULESET="${NAME//\//_}"
+         BACKUP_FILE="$STATE_DIR/backups/${SAFE_REPO}__${SAFE_RULESET}.json"
+      else
+         BACKUP_FILE="$(ls "$STATE_DIR/backups/${SAFE_REPO}__"*.json 2>/dev/null | head -n1)"
+      fi
+      
+      if [[ -z "$BACKUP_FILE" || ! -f "$BACKUP_FILE" ]]; then
+        error "[$REPO] Backup file missing in $STATE_DIR/backups/. Cannot restore."
+        continue
+      fi
 
-    info "[$REPO] Restoring configuration..."
-    
-    RULE_NAME="$(jq -r .name < "$BACKUP_FILE")"
-    RULE_ID="$(gh api "/repos/$OWNER/$REPO/rulesets" --jq ".[] | select(.name == \"$RULE_NAME\") | .id")"
+      info "[$REPO] Restoring configuration..."
+      
+      RULE_NAME="$(jq -r .name < "$BACKUP_FILE")"
+      RULE_ID="$(gh api "/repos/$OWNER/$REPO/rulesets" --jq ".[] | select(.name == \"$RULE_NAME\") | .id")"
 
-    if [[ -z "$RULE_ID" ]]; then
-       error "[$REPO] Could not find ruleset '$RULE_NAME' to restore."
-       continue
-    fi
+      if [[ -z "$RULE_ID" ]]; then
+         error "[$REPO] Could not find ruleset '$RULE_NAME' to restore."
+         continue
+      fi
 
-    if gh api --method PUT "/repos/$OWNER/$REPO/rulesets/$RULE_ID" --input "$BACKUP_FILE" >/dev/null 2>&1; then
-      success "[$REPO] Restored successfully."
-    else
-      error "[$REPO] Failed to restore."
-    fi
-  done
+      if gh api --method PUT "/repos/$OWNER/$REPO/rulesets/$RULE_ID" --input "$BACKUP_FILE" >/dev/null 2>&1; then
+        success "[$REPO] Restored successfully."
+      else
+        error "[$REPO] Failed to restore."
+      fi
+    done
+  fi
 
-  for item in "${CREATED_REPOS[@]}"; do
-    REPO="${item%%|*}"
-    NAME="${item#*|}"
-    
-    if [[ -z "$NAME" || "$NAME" == "$REPO" ]]; then
-       # Fallback if name wasn't recorded
-       NAME="${RULESET_NAME:-}"
-    fi
+  if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then
+    for item in "${CREATED_REPOS[@]}"; do
+      REPO="${item%%|*}"
+      NAME="${item#*|}"
+      
+      if [[ -z "$NAME" || "$NAME" == "$REPO" ]]; then
+         # Fallback if name wasn't recorded
+         NAME="${RULESET_NAME:-}"
+      fi
 
-    info "[$REPO] Deleting newly created ruleset..."
-    
-    if [[ -n "$NAME" ]]; then
-       ID="$(gh api "/repos/$OWNER/$REPO/rulesets" --jq ".[] | select(.name == \"$NAME\") | .id")"
-       if [[ -n "$ID" ]]; then
-          gh api --method DELETE "/repos/$OWNER/$REPO/rulesets/$ID" >/dev/null 2>&1 && success "[$REPO] Deleted '$NAME'." || error "[$REPO] Delete failed."
-       else
-          warn "[$REPO] Could not find ruleset '$NAME' to delete."
-       fi
-    else
-       warn "[$REPO] Cannot delete creation without knowing ruleset name. Manual deletion required."
-    fi
-  done
+      info "[$REPO] Deleting newly created ruleset..."
+      
+      if [[ -n "$NAME" ]]; then
+         ID="$(gh api "/repos/$OWNER/$REPO/rulesets" --jq ".[] | select(.name == \"$NAME\") | .id")"
+         if [[ -n "$ID" ]]; then
+            gh api --method DELETE "/repos/$OWNER/$REPO/rulesets/$ID" >/dev/null 2>&1 && success "[$REPO] Deleted '$NAME'." || error "[$REPO] Delete failed."
+         else
+            warn "[$REPO] Could not find ruleset '$NAME' to delete."
+         fi
+      else
+         warn "[$REPO] Cannot delete creation without knowing ruleset name. Manual deletion required."
+      fi
+    done
+  fi
 
   section "Rollback Complete"
   exit 0
 fi
-
-canonicalize_ruleset() {
-  jq -S '
-    # 1. Volatile Metadata Blacklist
-    del(.id, .node_id, .repository_id, .created_at, .updated_at, .source_type, .source, ._links, .current_user_can_bypass) |
-    
-    # 2. Normalize Bypass Actors (handle missing/null as empty list)
-    .bypass_actors = (.bypass_actors // [] | map(del(.id)) | sort_by(.actor_id, .actor_type)) |
-    
-    # 3. Stable Rules (Future-proof: preserves all unknown fields/parameters)
-    if .rules then 
-      .rules |= sort_by(.type) 
-    else . end |
-    
-    # 4. Stable/Normalized Conditions
-    if .conditions.ref_name then
-      if .conditions.ref_name.include then .conditions.ref_name.include |= sort else . end |
-      if .conditions.ref_name.exclude then .conditions.ref_name.exclude |= sort else . end
-    else . end
-  '
-}
 
 if [[ "$AUDIT_MODE" == true ]]; then
   POLICY_COUNT=0
@@ -495,9 +512,12 @@ process_repo() {
     local first_live_json=""
     local first_canonical=""
 
-    ids="$(printf '%s' "$RULESET_LIST" | jq -r '.[].id')"
+    local rule_ids=()
+    while IFS= read -r id; do
+      [[ -n "$id" ]] && rule_ids+=("$id")
+    done < <(printf '%s' "$RULESET_LIST" | jq -r '.[].id')
 
-    for ID in $ids; do
+    for ID in "${rule_ids[@]}"; do
        if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$REPO/rulesets/$ID" 2>"$TMP_ERR")"; then
          continue
        fi
@@ -728,17 +748,6 @@ for pid in "${pids[@]+"${pids[@]}"}"; do
   fi
 done
 
-read_state() {
-  local file="$STATE_DIR/$1"
-  if [[ -f "$file" ]]; then
-    while IFS= read -r line; do
-      if [[ -n "$line" ]]; then
-        echo "${line#|}"
-      fi
-    done < "$file"
-  fi
-}
-
 if [[ "$AUDIT_MODE" == true ]]; then
   MATCHED_REPOS=()
   while IFS= read -r line; do MATCHED_REPOS+=("$line"); done < <(read_state "matched.log")
@@ -824,7 +833,12 @@ else
 
   if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]//|/}")"; fi
   if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]//|/}")"; fi
-  if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then echo -e "\nSkipped repos:\n$(printf ' - %s\n' "${SKIPPED_REPOS[@]//|/ (} )")"; fi
+  if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then
+    echo -e "\nSkipped repos:"
+    for item in "${SKIPPED_REPOS[@]}"; do
+      echo " - ${item//|/ (})"
+    done
+  fi
   if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then 
     echo -e "\nFailed repos:"
     for item in "${FAILED_REPOS[@]}"; do
@@ -834,4 +848,9 @@ else
     done
     exit 1
   fi
+fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi

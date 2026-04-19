@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # common.sh - Shared logic for GitHub ruleset scripts
+# shellcheck disable=SC2034
 
 # --- Default Global Variables ---
 OWNER=""
@@ -198,9 +199,11 @@ check_rate_limit() {
     warn "PRIMARY API RATE LIMIT EXHAUSTED ($remaining requests left)."
     
     if date --version >/dev/null 2>&1; then
-      local reset_str="$(date -d "@$reset_time" '+%I:%M %p')"
+      local reset_str
+      reset_str="$(date -d "@$reset_time" '+%I:%M %p')"
     else
-      local reset_str="$(date -r "$reset_time" '+%I:%M %p')"
+      local reset_str
+      reset_str="$(date -r "$reset_time" '+%I:%M %p')"
     fi
 
     warn "GitHub will reset your quota at $reset_str."
@@ -211,7 +214,7 @@ check_rate_limit() {
     
     warn "Simply run the exact same command later to resume from where it left off."
     echo "----------------------------------------"
-    exit 429
+    exit 173
   fi
 }
 

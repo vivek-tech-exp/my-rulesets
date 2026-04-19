@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +44,17 @@ Behavior:
   --rollback                  Undo the changes from the last delete session
   -h, --help                  Show this help
 EOF
+}
+
+read_state() {
+  local file="$STATE_DIR/$1"
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line; do
+      if [[ -n "$line" ]]; then
+        echo "${line#|}"
+      fi
+    done < "$file"
+  fi
 }
 
 for raw_arg in "$@"; do normalize_unicode_dashes "$raw_arg"; done
@@ -380,17 +392,6 @@ for pid in "${pids[@]+"${pids[@]}"}"; do
   fi
 done
 
-read_state() {
-  local file="$STATE_DIR/$1"
-  if [[ -f "$file" ]]; then
-    while IFS= read -r line; do
-      if [[ -n "$line" ]]; then
-        echo "${line#|}"
-      fi
-    done < "$file"
-  fi
-}
-
 DELETED_DETAILS=()
 while IFS= read -r line; do DELETED_DETAILS+=("$line"); done < <(read_state "deleted.log")
 SKIPPED_DETAILS=()
@@ -403,6 +404,22 @@ echo "Repos with deletions: ${#DELETED_DETAILS[@]}"
 echo "Repos skipped:        ${#SKIPPED_DETAILS[@]}"
 echo "Repos failed:         ${#FAILED_DETAILS[@]}"
 
-if [[ ${#DELETED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos modified:\n$(printf ' - %s\n' "${DELETED_DETAILS[@]//|/ (} )")"; fi
-if [[ ${#SKIPPED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos skipped:\n$(printf ' - %s\n' "${SKIPPED_DETAILS[@]//|/ (} )")"; fi
-if [[ ${#FAILED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos failed:\n$(printf ' - %s\n' "${FAILED_DETAILS[@]//|/ (} )")"; exit 1; fi
+if [[ ${#DELETED_DETAILS[@]} -gt 0 ]]; then
+  echo -e "\nRepos modified:"
+  for item in "${DELETED_DETAILS[@]}"; do
+    echo " - ${item//|/ (})"
+  done
+fi
+if [[ ${#SKIPPED_DETAILS[@]} -gt 0 ]]; then
+  echo -e "\nRepos skipped:"
+  for item in "${SKIPPED_DETAILS[@]}"; do
+    echo " - ${item//|/ (})"
+  done
+fi
+if [[ ${#FAILED_DETAILS[@]} -gt 0 ]]; then
+  echo -e "\nRepos failed:"
+  for item in "${FAILED_DETAILS[@]}"; do
+    echo " - ${item//|/ (})"
+  done
+  exit 1
+fi
