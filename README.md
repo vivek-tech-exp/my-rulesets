@@ -1,162 +1,95 @@
-# 🛡️ my-rulesets
+# 🛡️ my-rulesets (Governance-as-Code)
 
 [![GitHub CLI](https://img.shields.io/badge/gh-v2.0+-blue.svg)](https://github.com/cli/cli)
 [![Bash](https://img.shields.io/badge/bash-3.2+-lightgrey.svg)](https://www.gnu.org/software/bash/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A robust GitHub CLI toolset for applying, updating, and deleting standard repository branch rulesets across one repo, selected repos, or all repositories you own.
-
-Engineered for **safety**, **idempotency**, and **scalability**, featuring parallel processing, smart error classification, and state management.
-
----
-
-## 📖 Table of Contents
-- [Features](#-features)
-- [Architecture](#-architecture)
-- [Requirements](#-requirements)
-- [Usage Examples](#-usage-examples)
-- [CI/CD Integration](#-cicd-integration-governance-as-code)
-- [Available Flags](#-available-flags)
-- [Operational Warnings](#-operational-warning-api-rate-limits)
-- [Technical Notes](#-technical-notes)
-
----
-
-## ✨ Features
-
-- 🔄 **Idempotent Updates**: Compares canonicalized live ruleset JSON against desired state to prevent unnecessary API calls and noisy audit logs.
-- 🔍 **Fleet Discovery**: Isolated `--audit` mode crawls the full policy matrix to instantly map organizational drift without requiring a specific config or making mutating API calls.
-- 📸 **Policy Onboarding**: Translate manual UI-created rulesets directly into portable JSON templates via `--capture-as`.
-- ⚡ **Concurrency**: Process multiple repositories simultaneously using the `--parallel` flag for massive speed improvements at scale.
-- 🎯 **Smart Targeting**: Dynamically targets the repository's native default branch (`~DEFAULT_BRANCH`) rather than hardcoding `main` or `master`.
-- 🕵️ **Bypass Actor Management**: Audit or intentionally wipe `bypass_actors` configuration across your repositories.
-- 🚀 **Fail-Fast Deletions**: Performs a highly efficient pre-flight scan to ensure the target ruleset exists before executing loops.
-- 🛡️ **Archived Repo Resilience**: Gracefully skips archived repositories (403 errors) while failing loudly for genuine permission issues.
-- 🔁 **Auto-Retry Logic**: Built-in exponential backoff for transient 502s and secondary rate limits.
-
----
-
-## 🏗️ Architecture
-
-This toolset separates policy definitions from execution logic:
-
-| Component | Description |
-|:---|:---|
-| **`common.sh`** | **Shared Infrastructure**: API helpers, logging, error handling, and parallel state management. |
-| **`setup_github_rules.sh`** | **Sync Engine**: Creates and updates rulesets dynamically loaded from JSON policy configurations. |
-| **`delete_github_rules.sh`** | **Cleanup Engine**: Safely deletes rulesets using `--config` (extracts name automatically) or raw `--name`. |
-| **`policies/`** | **Policy Matrix**: 9 JSON configuration files categorized by scale (`individual`, `team`, `org`) and strictness. |
-
----
-
-## 🛠️ Requirements
-
-- **GitHub CLI (`gh`)**: Must be [installed](https://cli.github.com/) and authenticated (`gh auth login`).
-- **`jq`**: Required for JSON processing and canonicalization.
-- **`bash`**: Compatible with macOS default (3.2+) and modern Linux.
-
----
-
-## 🚀 Usage Examples
-
-### 1. Setting Up & Updating Rulesets
-```bash
-# Test a policy on a single repository (Dry Run)
-./setup_github_rules.sh --config policies/team/moderate.json --repo my-fi --dry-run
-
-# Apply structural policies to specific repositories
-./setup_github_rules.sh --config policies/individual/strict.json --repos "my-fi, borderless-buy"
-
-# Scale out: Apply org-level rules to ALL public repositories, processing 5 at a time
-./setup_github_rules.sh --config policies/org/strict.json --all --visibility public --parallel 5
-
-# Security Audit: Compare live state against strict policy without making changes
-./setup_github_rules.sh --config policies/org/strict.json --all --dry-run
-```
-
-### 2. Fleet Discovery (Audit Mode)
-```bash
-# Scan a specific repository against all 9 policies to map drift
-./setup_github_rules.sh --audit --repo my-rulesets
-
-# Scan the entire public organization fleet against all policies concurrently
-./setup_github_rules.sh --audit --all --visibility public --parallel 5
-```
-
-### 3. Policy Onboarding (Capture Mode)
-```bash
-# Extract the first ruleset from 'my-repo', strip metadata, and save as a template
-./setup_github_rules.sh --capture-as "My Standard Rules" --repo my-repo
-
-# Then apply the captured template organization-wide
-./setup_github_rules.sh --config policies/captured/My_Standard_Rules.json --all
-```
-
-### 4. Deleting Rulesets
-```bash
-# Extract the target ruleset name from the JSON config and safely simulate deleting it
-./delete_github_rules.sh --config policies/team/moderate.json --all --dry-run
-
-# Delete a ruleset via literal string name instead of config file
-./delete_github_rules.sh --repos "my-fi, old-project" --name "Protect Master" --yes
-
-# Nuke Option: Delete ALL rulesets on a specific repository
-./delete_github_rules.sh --repo my-test-repo
-```
-
----
-
-## 🚀 CI/CD Integration (Governance-as-Code)
-
-You can transition `my-rulesets` from a local CLI tool to a fully automated GitOps platform by hooking it directly into GitHub Actions.
-
-This built-in workflow is designed as a "Set and Forget" solution: any merge to the `policies/` directory will automatically trigger a fleet-wide synchronization.
-
-### Setup Instructions
-1. Navigate to your Developer Settings and generate a **Personal Access Token (Classic)** with `repo` and `admin:org` scopes.
-2. In your `my-rulesets` repository, go to **Settings > Secrets and variables > Actions**.
-3. Create a **New repository secret** named `GH_PAT` and paste your token.
-
-Once set up, whenever a collaborator modifies a policy inside the `policies/` directory, GitHub Actions will silently and automatically propagate that structural change across your fleet!
-
----
-
-## 🚩 Available Flags
-
-| Flag | Description | Default |
-|:---|:---|:---|
-| `--config <path>` | **[Required by setup]** Path to JSON policy file | - |
-| `--audit` | **[Fleet Discovery]** Check repos against all policies in `policies/` (replaces `--config`) | `false` |
-| `--capture-as <name>` | **[Policy Onboarding]** Fetch a ruleset, clean it, and save as JSON (replaces `--config`) | - |
-| `--force` | Force update a policy even if the local logic detects no changes | `false` |
-| `--all` | Apply to all matching repos | `true` |
-| `--repo <name>` | Apply to a single repository | - |
-| `--repos <a,b>` | Apply to comma-separated repositories | - |
-| `--owner <name>` | GitHub user/org owner | `vivek-tech-exp` |
-| `--visibility <type>` | Filter by `public`, `private`, or `all` | `all` |
-| `--include-forks` | Include forked repositories | `false` |
-| `--include-archived` | Include archived repositories | `false` |
-| `--parallel <N>` | Process N repositories concurrently | `1` |
-| `--dry-run` | Show actions without making any API mutations | - |
-| `--yes` | Skip safety confirmation prompts | - |
-| `--quiet` | Reduce non-essential terminal output | - |
-| `-h, --help` | Show the help menu | - |
-
----
-
-## ⚠️ Operational Warning: API Rate Limits
-
 > [!IMPORTANT]
-> GitHub enforces strict **Secondary Rate Limits** (abuse detection) to prevent rapid, concurrent API mutations. Use the `--parallel` flag judiciously.
+> ### 🚨 Urgent: August 30th Tag Migration
+> GitHub is deprecating legacy "Protected Tags." To keep your releases secure, all repositories must be migrated to the new **Tag Rulesets** engine by **August 30th**.
+>
+> Don't do it manually. `my-rulesets` includes built-in templates to migrate your entire organization to the new system in seconds:
+> ```bash
+> ./rules.sh sync --org --moderate --tags --all
+> ```
 
-- **✅ Safe (Auditing):** `--parallel 20 --dry-run` (GET requests are generally safe at high concurrency).
-- **✅ Safe (Mutating):** `--parallel 2` (Slow, steady POST/PUT/DELETE avoid abuse limits).
-- **❌ Dangerous:** `--parallel 20` (Blasting mutations will likely result in a temporary 403 API block).
+**The Enterprise Problem:** 
+Managing branch protections manually across dozens (or hundreds) of GitHub repositories is a scaling nightmare. Doing it through the UI takes hours, inevitably leads to configuration drift, and leaves security gaps where teams bypass standard compliance protocols unnoticed.
+
+**The Solution:** 
+`my-rulesets` acts as a **Policy-as-Code** automated engine. You define your organizational rulesets once in JSON, and this tool applies, audits, and enforces those rules across your entire fleet in seconds—powered by safe, concurrent GitHub API automation.
 
 ---
 
-## 📝 Technical Notes
+## ⚡ The "Aha!" Moment
 
-- **Resilience**: The toolset utilizes a retry-with-backoff wrapper. If a transient error or rate limit is hit, it pauses and retries up to 3 times.
-- **Default Scope**: If no flags are provided, scripts target all **public**, **non-archived**, **non-forked** repositories.
-- **Canonicalization**: The `jq` block in `setup_github_rules.sh` ensures that GitHub's slight JSON shape changes (like adding new feature flags) don't trigger false-positive updates.
+Detect configuration drift silently without touching live systems...
+
+```bash
+# Instantly audit your entire public fleet across all policies
+$ ./rules.sh audit --org --all --visibility public --parallel 5
+
+== Fleet Discovery Summary ==
+Matched:    45
+Off-Matrix: 2
+Failed:     0
+
+Off-Matrix repos (Action Required):
+ - legacy-auth-service
+     ↳ Fix: ./rules.sh sync --config policies/org/strict.json --repo legacy-auth-service
+ - experiments-repo
+     ↳ Fix: ./rules.sh capture "Custom Override" --repo experiments-repo
+```
+
+...then fix it automatically!
+
+```bash
+# Instantly push the strict organizational template to the disconnected repository
+$ ./rules.sh sync --org --strict --repo legacy-auth-service
+
+[legacy-auth-service] Processing...
+[legacy-auth-service] Updated ruleset
+✅ Run summary: 1 Updated, 0 Failed
+```
+
+---
+
+## 🏁 Quick Start
+
+**1. Clone & Authenticate**
+You will need the [GitHub CLI](https://cli.github.com/) authenticated with an account capable of managing the spaces you wish to target. 
+```bash
+git clone https://github.com/vivek-tech-exp/my-rulesets.git
+cd my-rulesets
+gh auth login
+```
+
+**2. Preview Changes (Dry Run)**
+Target a repository and simulate applying the moderate team-level ruleset template:
+```bash
+./rules.sh sync --team --moderate --repo my-testing-repo --dry-run
+```
+
+**3. Deploy the Policy**
+Remove `--dry-run` to blast it live!
+```bash
+./rules.sh sync --team --moderate --repo my-testing-repo
+```
+
+---
+
+## 📚 Deep Dive Documentation
+
+This tool is built for total automation. Explore the documentation to learn how to scale it across thousands of repositories or integrate it into a zero-touch CI/CD workflow:
+
+- [📖 Usage Manual (`docs/USAGE.md`)](docs/USAGE.md) - Full CLI command guide, Smart Matrix parameters, and the complete flag reference table.
+- [🤖 CI/CD Integration (`docs/CI_CD.md`)](docs/CI_CD.md) - Turn this tool into an automated "Set and Forget" GitOps pipeline.
+- [🏗️ System Architecture (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md) - Deep dive into state management, idempotency canonicalization, parallel threading, and resilience engineering.
+
+---
+
+## 🛠️ Minimal Requirements
+
+- **GitHub CLI (`gh`)**: Must be [installed](https://cli.github.com/) and authenticated.
+- **`jq`**: Required for JSON structural processing.
+- **`bash`**: Compatible with macOS default (3.2+) and modern Linux distributions.

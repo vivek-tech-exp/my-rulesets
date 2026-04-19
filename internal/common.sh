@@ -68,25 +68,66 @@ check_auth() {
   fi
 
   if [[ -z "$OWNER" ]]; then
-    OWNER="$(gh api user --jq .login)" || {
+    local personal_user
+    personal_user="$(gh api user --jq .login 2>/dev/null)" || {
       error "Failed to retrieve default GitHub owner. Please specify with --owner."
       exit 1
     }
+
+    local user_orgs
+    user_orgs="$(gh api user/orgs --jq '.[].login' 2>/dev/null || true)"
+
+    if [[ -n "$user_orgs" && "$YES" == false && "$QUIET" == false && -t 0 ]]; then
+      info "You are part of multiple organizations."
+      echo "To prevent accidental deployments, please select the target owner:"
+      echo
+      
+      local options=("$personal_user (Personal Account)")
+      local org_list=()
+      while IFS= read -r org; do
+        [[ -n "$org" ]] && org_list+=("$org")
+      done <<< "$user_orgs"
+      
+      options+=("${org_list[@]}")
+      
+      # Use select for an interactive menu
+      PS3="Select owner (1-${#options[@]}): "
+      select choice in "${options[@]}"; do
+        if [[ -n "$choice" ]]; then
+          if [[ "$REPLY" -eq 1 ]]; then
+            OWNER="$personal_user"
+          else
+            OWNER="${org_list[$((REPLY-2))]}"
+          fi
+          break
+        else
+          echo "Invalid selection. Please try again."
+        fi
+      done
+      
+      echo
+      info "Selected owner: $OWNER"
+      info "(Tip: You can skip this prompt in the future by passing: --owner $OWNER)"
+      echo "----------------------------------------"
+    else
+      # Fallback to personal account for non-interactive or explicit bypass
+      OWNER="$personal_user"
+      if [[ -n "$user_orgs" && "$QUIET" == false ]]; then
+         info "Defaulting to personal account: $OWNER"
+      fi
+    fi
   fi
 }
 
 # --- State Management ---
 setup_state_dir() {
-  local caller_script
-  caller_script="$(basename "$0" .sh)"
+  local script_name="${1:-$(basename "$0" .sh)}"
   
-  STATE_DIR="${PWD}/.gh_state_${caller_script}_${OWNER}"
+  STATE_DIR="${PWD}/.gh_state_${script_name}_${OWNER}"
   mkdir -p "$STATE_DIR"
   
-  # Ensure log files exist so grep doesn't fail later
-  touch "$STATE_DIR/created.log" "$STATE_DIR/updated.log" \
-        "$STATE_DIR/skipped.log" "$STATE_DIR/failed.log" \
-        "$STATE_DIR/deleted.log"
+  # Ensure all possible log files exist so grep/read_state doesn't fail during evaluation
+  touch "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,off_matrix,no_ruleset}.log
         
   info "State directory: $STATE_DIR"
 }
@@ -95,7 +136,7 @@ setup_state_dir() {
 record_state() {
   local state_type="$1"
   local text="$2"
-  printf '%s\n' "$text" >> "$STATE_DIR/${state_type}.log"
+  printf '|%s\n' "$text" >> "$STATE_DIR/${state_type}.log"
 }
 
 # --- Rate Limit Protection (Graceful Exit) ---

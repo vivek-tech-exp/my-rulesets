@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 TARGET_RULESET="all"
+SMART_SCOPE=""
+SMART_LEVEL=""
+SMART_TAGS=""
 
 usage() {
   cat <<EOF
@@ -25,6 +28,11 @@ Scope:
 Target:
   --config <path>             Path to JSON policy file (extracts name to delete)
   --name <name>               Delete only rulesets matching this name (default: all rulesets)
+
+Smart Matrix (Alternative to --config):
+  --org | --team | --individual   Select the policy scope
+  --strict | --moderate | --loose Select the policy level
+  --tags                          Target tags instead of branches (optional)
 
 Behavior:
   --parallel <N>              Process N repos concurrently (default: 1)
@@ -49,6 +57,13 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --org) SMART_SCOPE="org"; shift ;;
+    --team) SMART_SCOPE="team"; shift ;;
+    --individual) SMART_SCOPE="individual"; shift ;;
+    --strict) SMART_LEVEL="strict"; shift ;;
+    --moderate) SMART_LEVEL="moderate"; shift ;;
+    --loose) SMART_LEVEL="loose"; shift ;;
+    --tags) SMART_TAGS="_tags"; shift ;;
     --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
@@ -101,6 +116,20 @@ done
 if [[ "$VISIBILITY" != "public" && "$VISIBILITY" != "private" && "$VISIBILITY" != "all" ]]; then
   error "Invalid --visibility value: $VISIBILITY"
   exit 1
+fi
+
+if [[ "$TARGET_RULESET" == "all" && -n "$SMART_SCOPE" && -n "$SMART_LEVEL" ]]; then
+  SMART_CONFIG="$SCRIPT_DIR/../policies/${SMART_SCOPE}/${SMART_LEVEL}${SMART_TAGS}.json"
+  if [[ -f "$SMART_CONFIG" ]]; then
+      TARGET_RULESET="$(cat "$SMART_CONFIG" | jq -r .name 2>/dev/null || echo '')"
+      if [[ -z "$TARGET_RULESET" || "$TARGET_RULESET" == "null" ]]; then
+        error "Failed to extract 'name' from $SMART_CONFIG"
+        exit 1
+      fi
+  else
+      error "Smart Matrix file not found: $SMART_CONFIG"
+      exit 1
+  fi
 fi
 
 require_cmd gh
@@ -175,7 +204,7 @@ fi
 process_repo() {
   local REPO="$1"
   
-  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/{created,updated,skipped,failed,deleted}.log 2>/dev/null; then
+  if grep -q -F "|${REPO}|" "$STATE_DIR"/{created,updated,skipped,failed,deleted}.log 2>/dev/null; then
     info "[$REPO] Already processed in a previous run. Resuming..."
     return 0
   fi
@@ -189,11 +218,11 @@ process_repo() {
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
       warn "[$REPO] Skipped (Archived)"
-      record_state "skipped" "$REPO (archived)"
+      record_state "skipped" "$REPO|archived"
       return
     fi
     error "[$REPO] Failed to list rulesets: $ERR_MSG"
-    record_state "failed" "$REPO (API error)"
+    record_state "failed" "$REPO|API error"
     return
   fi
 
@@ -205,7 +234,7 @@ process_repo() {
 
   if [[ -z "$RULESET_IDS" || "$RULESET_IDS" == "null" ]]; then
     success "[$REPO] No matching rulesets to delete"
-    record_state "skipped" "$REPO (none found)"
+    record_state "skipped" "$REPO|none found"
     return
   fi
 
@@ -231,7 +260,7 @@ process_repo() {
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
           warn "[$REPO] Skipped (Archived)"
-          record_state "skipped" "$REPO (archived)"
+          record_state "skipped" "$REPO|archived"
           break 
         else
           error "[$REPO] Failed to delete ruleset '$RULE_NAME': $ERR_MSG"
@@ -242,12 +271,12 @@ process_repo() {
   done <<< "$RULESET_IDS"
 
   if [[ "$REPO_FAILED" == true ]]; then
-    record_state "failed" "$REPO (partial/full failure)"
+    record_state "failed" "$REPO|partial/full failure"
   elif [[ "$REPO_DELETED_COUNT" -gt 0 ]]; then
     if [[ "$DRY_RUN" == true ]]; then
-      record_state "deleted" "$REPO (dry-run: $REPO_DELETED_COUNT rulesets)"
+      record_state "deleted" "$REPO|dry-run: $REPO_DELETED_COUNT rulesets"
     else
-      record_state "deleted" "$REPO ($REPO_DELETED_COUNT rulesets)"
+      record_state "deleted" "$REPO|$REPO_DELETED_COUNT rulesets"
     fi
   fi
 }
@@ -271,7 +300,7 @@ for REPO in "${REPOS[@]}"; do
       for pid in "${pids[@]+"${pids[@]}"}"; do
         if ! wait "$pid"; then
           error "A background job (PID: $pid) crashed unexpectedly."
-          record_state "failed" "System Crash (PID: $pid)"
+          record_state "failed" "System Crash|PID: $pid"
         fi
       done
       pids=()
@@ -282,7 +311,7 @@ done
 for pid in "${pids[@]+"${pids[@]}"}"; do 
   if ! wait "$pid"; then
     error "A background job (PID: $pid) crashed unexpectedly."
-    record_state "failed" "System Crash (PID: $pid)"
+    record_state "failed" "System Crash|PID: $pid"
   fi
 done
 
@@ -290,7 +319,9 @@ read_state() {
   local file="$STATE_DIR/$1"
   if [[ -f "$file" ]]; then
     while IFS= read -r line; do
-      [[ -n "$line" ]] && echo "$line"
+      if [[ -n "$line" ]]; then
+        echo "${line#|}"
+      fi
     done < "$file"
   fi
 }
@@ -307,6 +338,6 @@ echo "Repos with deletions: ${#DELETED_DETAILS[@]}"
 echo "Repos skipped:        ${#SKIPPED_DETAILS[@]}"
 echo "Repos failed:         ${#FAILED_DETAILS[@]}"
 
-if [[ ${#DELETED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos modified:\n$(printf ' - %s\n' "${DELETED_DETAILS[@]}")"; fi
-if [[ ${#SKIPPED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos skipped:\n$(printf ' - %s\n' "${SKIPPED_DETAILS[@]}")"; fi
-if [[ ${#FAILED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos failed:\n$(printf ' - %s\n' "${FAILED_DETAILS[@]}")"; exit 1; fi
+if [[ ${#DELETED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos modified:\n$(printf ' - %s\n' "${DELETED_DETAILS[@]//|/ (} )")"; fi
+if [[ ${#SKIPPED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos skipped:\n$(printf ' - %s\n' "${SKIPPED_DETAILS[@]//|/ (} )")"; fi
+if [[ ${#FAILED_DETAILS[@]} -gt 0 ]]; then echo -e "\nRepos failed:\n$(printf ' - %s\n' "${FAILED_DETAILS[@]//|/ (} )")"; exit 1; fi
