@@ -194,10 +194,12 @@ if [[ "$AUDIT_MODE" == true ]]; then
   POLICY_COUNT=0
   POLICY_NAMES=()
   POLICY_CANONICALS=()
+  POLICY_PATHS=()
   if [[ -d "$SCRIPT_DIR/../policies" ]]; then
     while IFS= read -r -d '' p; do
        POLICY_NAMES+=("$(jq -r .name < "$p")")
        POLICY_CANONICALS+=("$(cat "$p" | canonicalize_ruleset)")
+       POLICY_PATHS+=("policies/${p#*/policies/}")
        POLICY_COUNT=$((POLICY_COUNT + 1))
     done < <(find "$SCRIPT_DIR/../policies" -type f -name "*.json" -print0)
   fi
@@ -392,12 +394,14 @@ process_repo() {
           echo -e "       ${BLUE}↳ Drift detected against matrix policy '${live_name}':${NC}"
           diff -u <(printf '%s\n' "${POLICY_CANONICALS[$target_idx]}") <(printf '%s\n' "$first_canonical") | \
             tail -n +3 | sed 's/^/         /' || true
+          record_state "off_matrix" "$REPO|./rules.sh sync --config ${POLICY_PATHS[$target_idx]} --repo $REPO"
         else
           echo -e "       ${BLUE}↳ Custom ruleset name: '${live_name}' (No matching matrix template)${NC}"
+          record_state "off_matrix" "$REPO|./rules.sh capture \"${live_name}\" --repo $REPO"
         fi
+      else
+        record_state "off_matrix" "$REPO|./rules.sh capture \"unknown\" --repo $REPO"
       fi
-
-      record_state "off_matrix" "$REPO"
     fi
     return
   fi
@@ -576,7 +580,18 @@ if [[ "$AUDIT_MODE" == true ]]; then
   echo "Failed:     ${#FAILED_REPOS[@]}"
   
   if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched repos:\n$(printf ' - %s\n' "${MATCHED_REPOS[@]}")"; fi
-  if [[ ${#OFF_MATRIX_REPOS[@]} -gt 0 ]]; then echo -e "\nOff-Matrix repos:\n$(printf ' - %s\n' "${OFF_MATRIX_REPOS[@]}")"; fi
+  if [[ ${#OFF_MATRIX_REPOS[@]} -gt 0 ]]; then
+    echo -e "\nOff-Matrix repos (Action Required):"
+    for item in "${OFF_MATRIX_REPOS[@]}"; do
+      r="${item%%|*}"
+      cmd="${item#*|}"
+      if [[ "$r" != "$cmd" ]]; then
+        echo -e " - $r\n     ↳ Fix: $cmd"
+      else
+        echo " - $r"
+      fi
+    done
+  fi
   if [[ ${#NO_RULESET_REPOS[@]} -gt 0 ]]; then echo -e "\nNo Ruleset repos:\n$(printf ' - %s\n' "${NO_RULESET_REPOS[@]}")"; fi
   if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]}")"; exit 1; fi
 else
