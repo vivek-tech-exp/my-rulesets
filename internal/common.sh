@@ -231,3 +231,31 @@ get_repos() {
 
   gh "${args[@]+"${args[@]}"}" --jq '.[].name'
 }
+
+fetch_rulesets() {
+  local REPO="$1"
+  local TMP_ERR="$2"
+  local LIST
+  
+  # Use -s 'add' to merge paginated results into a single array
+  # If no output is produced (e.g. empty), result will be null
+  if ! LIST="$(with_retry "$TMP_ERR" gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR" | jq -s 'add // []')"; then
+    return 1
+  fi
+  
+  # Validate it's an array
+  local TYPE
+  TYPE="$(echo "$LIST" | jq -r 'type')"
+  if [[ "$TYPE" != "array" ]]; then
+    local MSG
+    MSG="$(echo "$LIST" | jq -r '.message // empty')"
+    if [[ -n "$MSG" ]]; then
+       echo "$MSG" > "$TMP_ERR"
+    else
+       echo "Response is not a valid JSON array (type: $TYPE)" > "$TMP_ERR"
+    fi
+    return 1
+  fi
+  
+  echo "$LIST"
+}

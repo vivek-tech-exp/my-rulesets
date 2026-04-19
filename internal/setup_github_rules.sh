@@ -370,15 +370,15 @@ process_repo() {
   
   info "[$REPO] Processing..."
 
-  if ! RULESET_LIST="$(with_retry "$TMP_ERR" gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
+  if ! RULESET_LIST="$(fetch_rulesets "$REPO" "$TMP_ERR")"; then
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
       warn "[$REPO] Skipped (Archived)"
       record_state "skipped" "$REPO|archived"
       return
     fi
-    error "[$REPO] Failed to list rulesets: $ERR_MSG"
-    record_state "failed" "$REPO|"
+    error "[$REPO] Failed to fetch rulesets: $ERR_MSG"
+    record_state "failed" "$REPO|API error"
     return
   fi
 
