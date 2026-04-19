@@ -110,10 +110,16 @@ check_auth() {
       info "(Tip: You can skip this prompt in the future by passing: --owner $OWNER)"
       echo "----------------------------------------"
     else
-      # Fallback to personal account for non-interactive or explicit bypass
+      # Handle non-interactive environments strictly
+      if [[ ! -t 0 && -n "$user_orgs" ]]; then
+        error "Error: Multiple organizations detected in a non-interactive environment. You must specify the target account using --owner."
+        exit 1
+      fi
+
+      # Fallback to personal account for explicit interactive bypass (e.g., --yes)
       OWNER="$personal_user"
       if [[ -n "$user_orgs" && "$QUIET" == false ]]; then
-         info "Defaulting to personal account ($OWNER) because interactive selection is unavailable or bypassed."
+         info "Defaulting to personal account ($OWNER) because interactive selection is bypassed."
       fi
     fi
   fi
