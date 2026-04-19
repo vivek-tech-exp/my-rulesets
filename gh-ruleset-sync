@@ -37,10 +37,19 @@ case "$COMMAND" in
     "$SCRIPT_DIR/internal/setup_github_rules.sh" --audit "$@"
     ;;
   capture)
-    if [[ $# -gt 0 && "$1" != -* ]]; then
-      CAPTURE_NAME="$1"
+    CAPTURE_NAME=""
+    REMAINING_ARGS=()
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" != -* && -z "$CAPTURE_NAME" ]]; then
+        CAPTURE_NAME="$1"
+      else
+        REMAINING_ARGS+=("$1")
+      fi
       shift
-      "$SCRIPT_DIR/internal/setup_github_rules.sh" --capture-as "$CAPTURE_NAME" "$@"
+    done
+
+    if [[ -n "$CAPTURE_NAME" ]]; then
+      "$SCRIPT_DIR/internal/setup_github_rules.sh" --capture-as "$CAPTURE_NAME" "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
     else
       echo "Error: 'capture' requires a policy name."
       echo "Example: gh ruleset-sync capture \"My New Policy\" --repo my-repo"

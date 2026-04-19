@@ -4,7 +4,7 @@
 # --- Default Global Variables ---
 OWNER=""
 MODE="all"
-VISIBILITY="public"
+VISIBILITY="all"
 INCLUDE_FORKS=false
 INCLUDE_ARCHIVED=false
 DRY_RUN=false
@@ -113,7 +113,7 @@ check_auth() {
       # Fallback to personal account for non-interactive or explicit bypass
       OWNER="$personal_user"
       if [[ -n "$user_orgs" && "$QUIET" == false ]]; then
-         info "Defaulting to personal account: $OWNER"
+         info "Defaulting to personal account ($OWNER) because interactive selection is unavailable or bypassed."
       fi
     fi
   fi
