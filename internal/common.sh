@@ -135,7 +135,22 @@ check_auth() {
 setup_state_dir() {
   local script_name="${1:-$(basename "$0" .sh)}"
   
-  STATE_DIR="${PWD}/.gh_state_${script_name}_${OWNER}"
+  # Determine base state directory (XDG compliant)
+  local config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
+  local base_state_dir="$config_root/gh-ruleset-sync/state"
+  
+  # Final centralized directory structure by owner and command
+  STATE_DIR="$base_state_dir/${OWNER}/${script_name}"
+  
+  # Detection check for legacy state folders in current directory
+  local legacy_dir="./.gh_state_${script_name}_${OWNER}"
+  if [[ -d "$legacy_dir" ]]; then
+    warn "Legacy state directory detected in current folder: $legacy_dir"
+    warn "Note: I am now using decentralized state: $STATE_DIR"
+    warn "If you want to resume a previous run, please move the contents to the new path."
+    echo "----------------------------------------"
+  fi
+
   mkdir -p "$STATE_DIR"
   
   # Ensure all possible log files exist so grep/read_state doesn't fail during evaluation
