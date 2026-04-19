@@ -385,7 +385,10 @@ process_repo() {
   if [[ "$AUDIT_MODE" == true ]]; then
     if [[ -z "$RULESET_LIST" || "$RULESET_LIST" == "[]" ]]; then
       echo -e "${BLUE}[$REPO] NO RULESET FOUND${NC}"
-      record_state "no_ruleset" "$REPO|./rules.sh sync --org --moderate --repo $REPO"
+      local s_scope="${SMART_SCOPE:-org}"
+      local s_level="${SMART_LEVEL:-moderate}"
+      local s_tags="${SMART_TAGS//_tags/ --tags}"
+      record_state "no_ruleset" "$REPO|./rules.sh sync --$s_scope --$s_level$s_tags --repo $REPO"
       return
     fi
     
