@@ -150,11 +150,8 @@ if [[ -z "$CONFIG_FILE" && -n "$SMART_SCOPE" && -n "$SMART_LEVEL" ]]; then
 fi
 
 if [[ "$AUDIT_MODE" == true ]]; then
-  STATE_DIR="${PWD}/.gh_state_audit_github_rules_${OWNER}"
-  mkdir -p "$STATE_DIR"
-  touch "$STATE_DIR/matched.log" "$STATE_DIR/off_matrix.log" "$STATE_DIR/no_ruleset.log"
-  touch "$STATE_DIR/created.log" "$STATE_DIR/updated.log" "$STATE_DIR/skipped.log" "$STATE_DIR/failed.log" "$STATE_DIR/deleted.log"
-  info "Audit state directory override: $STATE_DIR"
+  # Overlay our state prefix for audits
+  setup_state_dir "audit_github_rules"
 fi
 
 canonicalize_ruleset() {

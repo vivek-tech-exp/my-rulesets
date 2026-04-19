@@ -106,7 +106,8 @@ check_auth() {
       done
       
       echo
-      info "Selected owner: $OWNER (You can skip this in the future by using --owner $OWNER)"
+      info "Selected owner: $OWNER"
+      info "(Tip: You can skip this prompt in the future by passing: --owner $OWNER)"
       echo "----------------------------------------"
     else
       # Fallback to personal account for non-interactive or explicit bypass
@@ -120,16 +121,13 @@ check_auth() {
 
 # --- State Management ---
 setup_state_dir() {
-  local caller_script
-  caller_script="$(basename "$0" .sh)"
+  local script_name="${1:-$(basename "$0" .sh)}"
   
-  STATE_DIR="${PWD}/.gh_state_${caller_script}_${OWNER}"
+  STATE_DIR="${PWD}/.gh_state_${script_name}_${OWNER}"
   mkdir -p "$STATE_DIR"
   
-  # Ensure log files exist so grep doesn't fail later
-  touch "$STATE_DIR/created.log" "$STATE_DIR/updated.log" \
-        "$STATE_DIR/skipped.log" "$STATE_DIR/failed.log" \
-        "$STATE_DIR/deleted.log"
+  # Ensure all possible log files exist so grep/read_state doesn't fail during evaluation
+  touch "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,off_matrix,no_ruleset}.log
         
   info "State directory: $STATE_DIR"
 }
