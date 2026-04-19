@@ -56,9 +56,15 @@ Translate manual UI-created rulesets directly into portable JSON templates. This
 # Extract the first ruleset from 'my-repo', strip metadata, and save as a template
 ./rules.sh capture "My Standard Rules" --repo my-repo
 
+# Explicitly target a specific ruleset if multiple exist (e.g., to capture Tags)
+./rules.sh capture "My Tag Policy" --repo my-repo --capture-from "Protect Tags"
+
 # Then apply the captured template organization-wide
 ./rules.sh sync --config policies/captured/My_Standard_Rules.json --all
 ```
+
+> [!TIP]
+> **Smart Capture**: If you are in interactive mode (your terminal) and a repository contains multiple rulesets, the tool will automatically present a menu allowing you to choose between branch and tag rulesets before saving. In non-interactive/CI flows, it defaults to the first ruleset with a warning.
 
 ## 4. Deleting Rulesets (`nuke`)
 
@@ -87,6 +93,7 @@ Safely target and delete rulesets. The tool runs a pre-flight check to verify th
 | `--tags` | **[Smart Matrix]** Target tags instead of branches | - |
 | `--audit` | **[Fleet Discovery]** Check repos against all policies in `policies/` | `false` |
 | `--capture-as <name>` | **[Policy Onboarding]** Fetch a ruleset, clean it, and save as JSON | - |
+| `--capture-from <name>` | **[Policy Onboarding]** Specific ruleset name to capture from | *First found* |
 | `--force` | Force update a policy even if the local logic detects no changes | `false` |
 | `--all` | Apply to all matching repos | `true` |
 | `--repo <name>` | Apply to a single repository | - |

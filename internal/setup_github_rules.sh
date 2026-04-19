@@ -13,6 +13,7 @@ SMART_TAGS=""
 AUDIT_MODE=false
 CAPTURE_MODE=false
 CAPTURE_NAME=""
+CAPTURE_FROM=""
 DEBUG_DIFF=false
 ENFORCE_NO_BYPASS=false
 REMOVE_BYPASS=false
@@ -46,6 +47,7 @@ Behavior:
   --parallel <N>              Process N repos concurrently (default: 1)
   --audit                     Fleet discovery: check repos against all policies in policies/
   --capture-as <name>         Fetch ruleset from --repo, clean it, and save it as <name>.json
+  --capture-from <name>       Specific ruleset name to capture from (default: first found)
   --enforce-no-bypass         Fail if the existing ruleset has bypass actors configured
   --remove-bypass             Wipe existing bypass actors from the ruleset
   --force                     Force update policy even if it already matches
@@ -78,6 +80,11 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { error "--capture-as requires a policy name"; exit 1; }
       CAPTURE_MODE=true
       CAPTURE_NAME="$2"
+      shift 2
+      ;;
+    --capture-from)
+      [[ $# -ge 2 ]] || { error "--capture-from requires a source ruleset name"; exit 1; }
+      CAPTURE_FROM="$2"
       shift 2
       ;;
     --force) FORCE_UPDATE=true; shift ;;
@@ -269,14 +276,54 @@ if [[ "$CAPTURE_MODE" == true ]]; then
     exit 1
   fi
   
-  FIRST_ID="$(printf '%s' "$RULESET_LIST" | jq -r '.[0].id // empty')"
-  if [[ -z "$FIRST_ID" ]]; then
-    error "No ruleset found on $TARGET_REPO to capture."
+  local rule_count
+  rule_count="$(printf '%s' "$RULESET_LIST" | jq '. | length')"
+  
+  if [[ "$rule_count" -eq 0 ]]; then
+    error "No rulesets found on $TARGET_REPO to capture."
     exit 1
   fi
   
-  if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$TARGET_REPO/rulesets/$FIRST_ID" 2>"$TMP_ERR")"; then
-    error "Failed to fetch ruleset $FIRST_ID: $(cat "$TMP_ERR")"
+  local target_id=""
+  
+  if [[ -n "$CAPTURE_FROM" ]]; then
+    target_id="$(printf '%s' "$RULESET_LIST" | jq -r --arg n "$CAPTURE_FROM" '.[] | select(.name == $n) | .id // empty' | head -n1)"
+    if [[ -z "$target_id" ]]; then
+      error "Could not find ruleset named '$CAPTURE_FROM' on $TARGET_REPO"
+      exit 1
+    fi
+  elif [[ "$rule_count" -gt 1 ]]; then
+    if [[ "$YES" == false && "$QUIET" == false && -t 0 ]]; then
+      warn "Multiple rulesets found on $TARGET_REPO. Please select one to capture:"
+      
+      local options=()
+      local ids=()
+      while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        # Format: "Name (Target: branch)"
+        options+=("$(echo "$row" | cut -d'|' -f2) (Target: $(echo "$row" | cut -d'|' -f3))")
+        ids+=("$(echo "$row" | cut -d'|' -f1)")
+      done < <(printf '%s' "$RULESET_LIST" | jq -r '.[] | "\(.id)|\(.name)|\(.target)"')
+      
+      PS3="Select ruleset (1-${#options[@]}): "
+      select choice in "${options[@]}"; do
+        if [[ -n "$choice" ]]; then
+          target_id="${ids[$((REPLY-1))]}"
+          break
+        else
+          echo "Invalid selection."
+        fi
+      done
+    else
+      warn "Multiple rulesets found. Defaulting to the first one: $(printf '%s' "$RULESET_LIST" | jq -r '.[0].name')"
+      target_id="$(printf '%s' "$RULESET_LIST" | jq -r '.[0].id')"
+    fi
+  else
+    target_id="$(printf '%s' "$RULESET_LIST" | jq -r '.[0].id')"
+  fi
+  
+  if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$TARGET_REPO/rulesets/$target_id" 2>"$TMP_ERR")"; then
+    error "Failed to fetch ruleset $target_id: $(cat "$TMP_ERR")"
     exit 1
   fi
   
