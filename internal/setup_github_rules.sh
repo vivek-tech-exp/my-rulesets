@@ -380,15 +380,12 @@ process_repo() {
       return
     fi
     
-    local total_rulesets
-    local managed_count=0
+    local managed_rulesets=()
+    local unmanaged_rulesets=()
     local match_name=""
-    local managed_details=()
-    local unmanaged_details=()
     local first_live_json=""
     local first_canonical=""
 
-    total_rulesets="$(printf '%s' "$RULESET_LIST" | jq '. | length')"
     ids="$(printf '%s' "$RULESET_LIST" | jq -r '.[].id')"
 
     for ID in $ids; do
@@ -407,27 +404,29 @@ process_repo() {
        for i in "${!POLICY_CANONICALS[@]}"; do
           if [[ "$LIVE_CANONICAL" == "${POLICY_CANONICALS[$i]}" ]]; then
              found_in_matrix=true
-             managed_count=$((managed_count + 1))
+             managed_rulesets+=("$LIVE_NAME")
              match_name="${POLICY_NAMES[$i]}"
-             managed_details+=("$LIVE_NAME")
              break
           fi
        done
        
        if [[ "$found_in_matrix" == false ]]; then
-         unmanaged_details+=("$LIVE_NAME")
+         unmanaged_rulesets+=("$LIVE_NAME")
        fi
     done
     
-    if [[ "$managed_count" -eq 1 && "$total_rulesets" -eq 1 ]]; then
+    local m_count=${#managed_rulesets[@]}
+    local u_count=${#unmanaged_rulesets[@]}
+
+    if [[ "$m_count" -eq 1 && "$u_count" -eq 0 ]]; then
       echo -e "${GREEN}[$REPO] MATCHED: $match_name${NC}"
       record_state "matched" "$REPO|$match_name"
-    elif [[ "$managed_count" -ge 1 ]]; then
+    elif [[ "$m_count" -ge 1 && "$u_count" -gt 0 ]]; then
       echo -e "${YELLOW}[$REPO] MATCHED WITH EXTRAS${NC}"
-      info "       ↳ Managed: ${managed_details[*]}"
-      warn "       ↳ Unmanaged: ${unmanaged_details[*]:-None}"
-      record_state "matched_with_extras" "$REPO|$match_name (Total: $total_rulesets, Managed: $managed_count)"
-    else
+      info "       ↳ Managed: ${managed_rulesets[*]}"
+      warn "       ↳ Unmanaged: ${unmanaged_rulesets[*]}"
+      record_state "matched_with_extras" "$REPO|$match_name (Managed: $m_count, Unmanaged: $u_count)"
+    elif [[ "$m_count" -eq 0 ]]; then
       echo -e "${YELLOW}[$REPO] OFF-MATRIX / CUSTOM${NC}"
       
       if [[ -n "$first_live_json" ]]; then
@@ -454,6 +453,12 @@ process_repo() {
       else
         record_state "off_matrix" "$REPO|gh ruleset-sync capture \"unknown\" --repo $REPO"
       fi
+    else
+      # m_count > 1 and u_count == 0? 
+      # Still technically "Extras" or non-standard configuration
+      echo -e "${YELLOW}[$REPO] MATCHED WITH EXTRAS (Multiple Policies)${NC}"
+      info "       ↳ Managed: ${managed_rulesets[*]}"
+      record_state "matched_with_extras" "$REPO|$match_name (Multiple Managed: $m_count)"
     fi
     return
   fi
