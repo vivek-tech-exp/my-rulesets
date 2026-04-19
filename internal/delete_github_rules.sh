@@ -8,6 +8,7 @@ TARGET_RULESET="all"
 SMART_SCOPE=""
 SMART_LEVEL=""
 SMART_TAGS=""
+ROLLBACK_MODE=false
 
 usage() {
   cat <<EOF
@@ -39,6 +40,7 @@ Behavior:
   --dry-run                   Show actions without deleting anything
   --yes                       Skip confirmation prompts
   --quiet                     Reduce non-essential output
+  --rollback                  Undo the changes from the last delete session
   -h, --help                  Show this help
 EOF
 }
@@ -108,6 +110,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=true; shift ;;
     --yes) YES=true; shift ;;
     --quiet) QUIET=true; shift ;;
+    --rollback) ROLLBACK_MODE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) error "Unknown option: $1"; echo; usage; exit 1 ;;
   esac
@@ -136,6 +139,65 @@ require_cmd gh
 require_cmd jq
 check_auth
 setup_state_dir
+
+if [[ "$ROLLBACK_MODE" == true ]]; then
+  section "Rollback Mode"
+  
+  DELETED_REPOS=()
+  while IFS= read -r line; do [[ -n "$line" ]] && DELETED_REPOS+=("$line"); done < <(read_state "deleted.log")
+
+  TOTAL_ROLLBACK=${#DELETED_REPOS[@]}
+  
+  if [[ "$TOTAL_ROLLBACK" -eq 0 ]]; then
+    warn "No changes found to rollback in the current session state."
+    exit 0
+  fi
+
+  # Determine session timestamp (Mac/Linux compatible)
+  if date --version >/dev/null 2>&1; then
+    M_TIME="$(date -d "@$(stat -c %Y "$STATE_DIR/deleted.log")" '+%Y-%m-%d %I:%M %p')"
+  else
+    M_TIME="$(date -r "$(stat -f %m "$STATE_DIR/deleted.log")" '+%Y-%m-%d %I:%M %p')"
+  fi
+
+  warn "⚠ Proceeding with ROLLBACK."
+  echo "This will restore rulesets for $TOTAL_ROLLBACK repositories from session: $M_TIME"
+  
+  if [[ "$YES" == false ]]; then
+    read -r -p "Are you sure you want to continue? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { warn "Rollback cancelled."; exit 0; }
+  fi
+
+  echo "----------------------------------------"
+
+  for item in "${DELETED_REPOS[@]}"; do
+    REPO="${item%%|*}"
+    SAFE_REPO="${REPO//\//_}"
+    
+    # Find all backups for this repo
+    BACKUP_FILES=()
+    while IFS= read -r f; do [[ -n "$f" ]] && BACKUP_FILES+=("$f"); done < <(ls "$STATE_DIR/backups/${SAFE_REPO}__"*.json 2>/dev/null || true)
+    
+    if [[ ${#BACKUP_FILES[@]} -eq 0 ]]; then
+      error "[$REPO] No backups found in $STATE_DIR/backups/. Cannot restore."
+      continue
+    fi
+
+    for backup in "${BACKUP_FILES[@]}"; do
+      RULE_NAME="$(basename "$backup" .json | sed "s/^${SAFE_REPO}__//")"
+      info "[$REPO] Recreating ruleset: $RULE_NAME..."
+      
+      if gh api --method POST "/repos/$OWNER/$REPO/rulesets" --input "$backup" >/dev/null 2>&1; then
+        success "[$REPO] Restored '$RULE_NAME'."
+      else
+        error "[$REPO] Failed to restore '$RULE_NAME'."
+      fi
+    done
+  done
+
+  section "Rollback Complete"
+  exit 0
+fi
 
 confirm_scope() {
   local repo_count="$1"
@@ -245,9 +307,17 @@ process_repo() {
     [[ -z "$ID" ]] && continue
     RULE_NAME="$(printf '%s' "$RULESET_LIST" | jq -r --arg id "$ID" '.[] | select(.id == ($id|tonumber)) | .name')"
     
+    # Capture full backup before destructive delete
+    if ! FULL_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$REPO/rulesets/$ID" 2>"$TMP_ERR")"; then
+       warn "[$REPO] Could not backup '$RULE_NAME' before deletion. Rollback will be missing this ruleset."
+    else
+       backup_ruleset "$REPO" "$RULE_NAME" "$FULL_JSON"
+    fi
+
     if [[ "$DRY_RUN" == true ]]; then
       warn "[$REPO] Would delete ruleset '$RULE_NAME' (ID: $ID)"
       REPO_DELETED_COUNT=$((REPO_DELETED_COUNT + 1))
+      record_state "deleted" "$REPO|dry-run: $RULE_NAME"
     else
       if with_retry "$TMP_ERR" gh api \
         --method DELETE \
@@ -256,6 +326,7 @@ process_repo() {
         "/repos/$OWNER/$REPO/rulesets/$ID" >/dev/null 2>"$TMP_ERR"; then
         success "[$REPO] Deleted ruleset '$RULE_NAME'"
         REPO_DELETED_COUNT=$((REPO_DELETED_COUNT + 1))
+        record_state "deleted" "$REPO|$RULE_NAME"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
@@ -272,12 +343,6 @@ process_repo() {
 
   if [[ "$REPO_FAILED" == true ]]; then
     record_state "failed" "$REPO|partial/full failure"
-  elif [[ "$REPO_DELETED_COUNT" -gt 0 ]]; then
-    if [[ "$DRY_RUN" == true ]]; then
-      record_state "deleted" "$REPO|dry-run: $REPO_DELETED_COUNT rulesets"
-    else
-      record_state "deleted" "$REPO|$REPO_DELETED_COUNT rulesets"
-    fi
   fi
 }
 

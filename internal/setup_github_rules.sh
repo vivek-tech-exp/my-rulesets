@@ -18,6 +18,7 @@ DEBUG_DIFF=false
 ENFORCE_NO_BYPASS=false
 REMOVE_BYPASS=false
 FORCE_UPDATE=false
+ROLLBACK_MODE=false
 
 usage() {
   cat <<EOF
@@ -55,6 +56,7 @@ Behavior:
   --debug-diff                Print canonical desired/live JSON when repo differs
   --yes                       Skip confirmation prompts
   --quiet                     Reduce non-essential output
+  --rollback                  Undo the changes from the last sync session
   -h, --help                  Show this help
 EOF
 }
@@ -130,6 +132,7 @@ while [[ $# -gt 0 ]]; do
     --debug-diff) DEBUG_DIFF=true; shift ;;
     --yes) YES=true; shift ;;
     --quiet) QUIET=true; shift ;;
+    --rollback) ROLLBACK_MODE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) error "Unknown option: $1"; echo; usage; exit 1 ;;
   esac
@@ -159,6 +162,101 @@ fi
 if [[ "$AUDIT_MODE" == true ]]; then
   # Overlay our state prefix for audits
   setup_state_dir "audit_github_rules"
+fi
+
+if [[ "$ROLLBACK_MODE" == true ]]; then
+  section "Rollback Mode"
+  
+  UPDATED_REPOS=()
+  while IFS= read -r line; do [[ -n "$line" ]] && UPDATED_REPOS+=("$line"); done < <(read_state "updated.log")
+  CREATED_REPOS=()
+  while IFS= read -r line; do [[ -n "$line" ]] && CREATED_REPOS+=("$line"); done < <(read_state "created.log")
+
+  TOTAL_ROLLBACK=$(( ${#UPDATED_REPOS[@]} + ${#CREATED_REPOS[@]} ))
+  
+  if [[ "$TOTAL_ROLLBACK" -eq 0 ]]; then
+    warn "No changes found to rollback in the current session state."
+    exit 0
+  fi
+
+  # Determine session timestamp (Mac/Linux compatible)
+  if date --version >/dev/null 2>&1; then
+    M_TIME="$(date -d "@$(stat -c %Y "$STATE_DIR/updated.log")" '+%Y-%m-%d %I:%M %p')"
+  else
+    M_TIME="$(date -r "$(stat -f %m "$STATE_DIR/updated.log")" '+%Y-%m-%d %I:%M %p')"
+  fi
+
+  warn "⚠ Proceeding with ROLLBACK."
+  echo "This will revert ${#UPDATED_REPOS[@]} updates and delete ${#CREATED_REPOS[@]} creations from session: $M_TIME"
+  
+  if [[ "$YES" == false ]]; then
+    read -r -p "Are you sure you want to continue? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { warn "Rollback cancelled."; exit 0; }
+  fi
+
+  echo "----------------------------------------"
+
+  for item in "${UPDATED_REPOS[@]}"; do
+    REPO="${item%%|*}"
+    NAME="${item#*|}"
+    SAFE_REPO="${REPO//\//_}"
+    
+    # Discovery: find the backup corresponding to this repo
+    # If NAME is present, we try a specific match, otherwise use head -n1
+    if [[ -n "$NAME" && "$NAME" != "$REPO" ]]; then
+       SAFE_RULESET="${NAME//\//_}"
+       BACKUP_FILE="$STATE_DIR/backups/${SAFE_REPO}__${SAFE_RULESET}.json"
+    else
+       BACKUP_FILE="$(ls "$STATE_DIR/backups/${SAFE_REPO}__"*.json 2>/dev/null | head -n1)"
+    fi
+    
+    if [[ -z "$BACKUP_FILE" || ! -f "$BACKUP_FILE" ]]; then
+      error "[$REPO] Backup file missing in $STATE_DIR/backups/. Cannot restore."
+      continue
+    fi
+
+    info "[$REPO] Restoring configuration..."
+    
+    RULE_NAME="$(jq -r .name < "$BACKUP_FILE")"
+    RULE_ID="$(gh api "/repos/$OWNER/$REPO/rulesets" --jq ".[] | select(.name == \"$RULE_NAME\") | .id")"
+
+    if [[ -z "$RULE_ID" ]]; then
+       error "[$REPO] Could not find ruleset '$RULE_NAME' to restore."
+       continue
+    fi
+
+    if gh api --method PUT "/repos/$OWNER/$REPO/rulesets/$RULE_ID" --input "$BACKUP_FILE" >/dev/null 2>&1; then
+      success "[$REPO] Restored successfully."
+    else
+      error "[$REPO] Failed to restore."
+    fi
+  done
+
+  for item in "${CREATED_REPOS[@]}"; do
+    REPO="${item%%|*}"
+    NAME="${item#*|}"
+    
+    if [[ -z "$NAME" || "$NAME" == "$REPO" ]]; then
+       # Fallback if name wasn't recorded
+       NAME="${RULESET_NAME:-}"
+    fi
+
+    info "[$REPO] Deleting newly created ruleset..."
+    
+    if [[ -n "$NAME" ]]; then
+       ID="$(gh api "/repos/$OWNER/$REPO/rulesets" --jq ".[] | select(.name == \"$NAME\") | .id")"
+       if [[ -n "$ID" ]]; then
+          gh api --method DELETE "/repos/$OWNER/$REPO/rulesets/$ID" >/dev/null 2>&1 && success "[$REPO] Deleted '$NAME'." || error "[$REPO] Delete failed."
+       else
+          warn "[$REPO] Could not find ruleset '$NAME' to delete."
+       fi
+    else
+       warn "[$REPO] Cannot delete creation without knowing ruleset name. Manual deletion required."
+    fi
+  done
+
+  section "Rollback Complete"
+  exit 0
 fi
 
 canonicalize_ruleset() {
@@ -499,7 +597,7 @@ process_repo() {
         "/repos/$OWNER/$REPO/rulesets" \
         --input - <<<"$CREATE_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
         success "[$REPO] Created ruleset"
-        record_state "created" "$REPO|"
+        record_state "created" "$REPO|$RULESET_NAME"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
@@ -519,6 +617,8 @@ process_repo() {
     record_state "failed" "$REPO|"
     return
   fi
+
+  backup_ruleset "$REPO" "$RULESET_NAME" "$LIVE_JSON"
 
   if [[ "$ENFORCE_NO_BYPASS" == true ]]; then
     BYPASS_COUNT="$(printf '%s' "$LIVE_JSON" | jq '.bypass_actors | length')"
@@ -579,7 +679,7 @@ process_repo() {
         else
           success "[$REPO] Updated ruleset"
         fi
-        record_state "updated" "$REPO|"
+        record_state "updated" "$REPO|$RULESET_NAME"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then

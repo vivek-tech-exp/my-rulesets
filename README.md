@@ -82,17 +82,18 @@ Avoid managing raw JSON by using the built-in Smart Matrix. It maps three **Scop
 | `--parallel <N>` | Process N repositories concurrently (Recommended: `20` for audits, `2` for syncs). |
 | `--dry-run` | Preview actions without making any API changes. |
 | `--force` | Overwrite existing rules even if no structural change is detected. |
+| `--rollback` | Undo the changes from the last sync/delete session for the current owner. |
 
 ---
 
 ## 🏗️ Architecture & Resilience
 
 Designed for scalability and reliability in professional environments:
-
-- **Checkpoint State Management:** Every run generates `.gh_state_*` logs. If a session is interrupted (e.g., rate limits, network drop), running the same command again will **instantly resume** exactly where it left off.
-- **Hashed Idempotency:** The engine performs a `jq`-based canonicalization check before every sync. It compares the "Desired" vs "Live" state and only dispatches a `PUT` request if a delta is physically identified, minimizing GitHub API pressure.
+- **Centralized Checkpoint State:** Session logs are stored in `~/.config/gh-ruleset-sync/state/`. If a run is interrupted (rate limits, network drop), running the same command again **instantly resumes** exactly where it left off.
+- **Hashed Idempotency:** The engine performs a `jq`-based canonicalization check before every sync. It only dispatches a `PUT` request if a structural delta is identified, minimizing API pressure.
+- **Rollback Safety Net:** Every destructive action (sync update or nuke) captures a high-fidelity snapshot of the previous configuration before modifying it. Use the `--rollback` flag to revert an entire session's changes in seconds.
 - **Resilience Wrappers:** All API calls use a `with_retry` backoff system that handles transient `502/503` errors and GitHub Secondary Rate Limits automatically.
-- **Smart Archival Bypass:** Native detection of archived or disabled repositories ensures that fleet-wide commands don't fail due to read-only entities.
+- **Smart Archival Bypass:** Native detection of archived or disabled repositories ensures fleet-wide commands don't fail due to read-only entities.
 
 ---
 

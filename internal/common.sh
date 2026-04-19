@@ -151,12 +151,27 @@ setup_state_dir() {
     echo "----------------------------------------"
   fi
 
-  mkdir -p "$STATE_DIR"
+  mkdir -p "$STATE_DIR/backups"
   
   # Ensure all possible log files exist so grep/read_state doesn't fail during evaluation
   touch "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,matched_with_extras,off_matrix,no_ruleset}.log
         
   info "State directory: $STATE_DIR"
+}
+
+# --- State Management ---
+backup_ruleset() {
+  local repo="$1"
+  local ruleset_name="$2"
+  local content="$3"
+  local safe_repo="${repo//\//_}"
+  local safe_ruleset="${ruleset_name//\//_}"
+  
+  # Atomic backup: only save the first time it is encountered in a session
+  local backup_path="$STATE_DIR/backups/${safe_repo}__${safe_ruleset}.json"
+  if [[ ! -f "$backup_path" ]]; then
+    echo "$content" > "$backup_path"
+  fi
 }
 
 # POSIX atomic append (safe for strings < PIPE_BUF / 512 bytes)
