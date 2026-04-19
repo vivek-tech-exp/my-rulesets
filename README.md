@@ -4,6 +4,15 @@
 [![Bash](https://img.shields.io/badge/bash-3.2+-lightgrey.svg)](https://www.gnu.org/software/bash/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> [!IMPORTANT]
+> ### 🚨 Urgent: August 30th Tag Migration
+> GitHub is deprecating legacy "Protected Tags." To keep your releases secure, all repositories must be migrated to the new **Tag Rulesets** engine by **August 30th**.
+>
+> Don't do it manually. `my-rulesets` includes built-in templates to migrate your entire organization to the new system in seconds:
+> ```bash
+> ./rules.sh sync --org --moderate --tags --all
+> ```
+
 **The Enterprise Problem:** 
 Managing branch protections manually across dozens (or hundreds) of GitHub repositories is a scaling nightmare. Doing it through the UI takes hours, inevitably leads to configuration drift, and leaves security gaps where teams bypass standard compliance protocols unnoticed.
 
