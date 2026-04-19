@@ -68,10 +68,53 @@ check_auth() {
   fi
 
   if [[ -z "$OWNER" ]]; then
-    OWNER="$(gh api user --jq .login)" || {
+    local personal_user
+    personal_user="$(gh api user --jq .login 2>/dev/null)" || {
       error "Failed to retrieve default GitHub owner. Please specify with --owner."
       exit 1
     }
+
+    local user_orgs
+    user_orgs="$(gh api user/orgs --jq '.[].login' 2>/dev/null || true)"
+
+    if [[ -n "$user_orgs" && "$YES" == false && "$QUIET" == false && -t 0 ]]; then
+      info "You are part of multiple organizations."
+      echo "To prevent accidental deployments, please select the target owner:"
+      echo
+      
+      local options=("$personal_user (Personal Account)")
+      local org_list=()
+      while IFS= read -r org; do
+        [[ -n "$org" ]] && org_list+=("$org")
+      done <<< "$user_orgs"
+      
+      options+=("${org_list[@]}")
+      
+      # Use select for an interactive menu
+      PS3="Select owner (1-${#options[@]}): "
+      select choice in "${options[@]}"; do
+        if [[ -n "$choice" ]]; then
+          if [[ "$REPLY" -eq 1 ]]; then
+            OWNER="$personal_user"
+          else
+            OWNER="${org_list[$((REPLY-2))]}"
+          fi
+          break
+        else
+          echo "Invalid selection. Please try again."
+        fi
+      done
+      
+      echo
+      info "Selected owner: $OWNER (You can skip this in the future by using --owner $OWNER)"
+      echo "----------------------------------------"
+    else
+      # Fallback to personal account for non-interactive or explicit bypass
+      OWNER="$personal_user"
+      if [[ -n "$user_orgs" && "$QUIET" == false ]]; then
+         info "Defaulting to personal account: $OWNER"
+      fi
+    fi
   fi
 }
 
