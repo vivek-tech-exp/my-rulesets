@@ -1,5 +1,5 @@
 {
-  "name": "Org - Moderate",
+  "name": "org_moderate",
   "target": "branch",
   "enforcement": "active",
   "conditions": {

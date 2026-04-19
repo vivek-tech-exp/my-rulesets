@@ -1,5 +1,5 @@
 {
-    "name": "Team - Tag Loose",
+    "name": "team_tag_loose",
     "target": "tag",
     "enforcement": "evaluate",
     "conditions": {

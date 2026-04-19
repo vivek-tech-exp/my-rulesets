@@ -166,19 +166,19 @@ canonicalize_ruleset() {
     # 1. Volatile Metadata Blacklist
     del(.id, .node_id, .repository_id, .created_at, .updated_at, .source_type, .source, ._links, .current_user_can_bypass) |
     
-    # 2. Stable Bypass Actors
-    if .bypass_actors then 
-      .bypass_actors |= (map(del(.id)) | sort_by(.actor_id, .actor_type)) 
-    else . end |
+    # 2. Normalize Bypass Actors (handle missing/null as empty list)
+    .bypass_actors = (.bypass_actors // [] | map(del(.id)) | sort_by(.actor_id, .actor_type)) |
     
     # 3. Stable Rules (Future-proof: preserves all unknown fields/parameters)
     if .rules then 
       .rules |= sort_by(.type) 
     else . end |
     
-    # 4. Stable Conditions
-    if .conditions.ref_name.include then .conditions.ref_name.include |= sort else . end |
-    if .conditions.ref_name.exclude then .conditions.ref_name.exclude |= sort else . end
+    # 4. Stable/Normalized Conditions
+    if .conditions.ref_name then
+      if .conditions.ref_name.include then .conditions.ref_name.include |= sort else . end |
+      if .conditions.ref_name.exclude then .conditions.ref_name.exclude |= sort else . end
+    else . end
   '
 }
 

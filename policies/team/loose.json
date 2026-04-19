@@ -1,5 +1,5 @@
 {
-  "name": "Team - Loose",
+  "name": "team_loose",
   "target": "branch",
   "enforcement": "evaluate",
   "conditions": {

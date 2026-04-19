@@ -1,5 +1,5 @@
 {
-  "name": "Org - Loose",
+  "name": "org_loose",
   "target": "branch",
   "enforcement": "evaluate",
   "conditions": {

@@ -1,5 +1,5 @@
 {
-  "name": "Org - Strict",
+  "name": "org_strict",
   "target": "branch",
   "enforcement": "active",
   "conditions": {

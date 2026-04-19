@@ -1,5 +1,5 @@
 {
-  "name": "Team - Tag Moderate",
+  "name": "team_tag_moderate",
   "target": "tag",
   "enforcement": "active",
   "conditions": {

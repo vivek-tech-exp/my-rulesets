@@ -1,5 +1,5 @@
 {
-  "name": "Individual - Loose",
+  "name": "individual_loose",
   "target": "branch",
   "enforcement": "evaluate",
   "conditions": {

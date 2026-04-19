@@ -1,5 +1,5 @@
 {
-  "name": "Individual - Strict",
+  "name": "individual_strict",
   "target": "branch",
   "enforcement": "active",
   "conditions": {

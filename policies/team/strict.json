@@ -1,5 +1,5 @@
 {
-  "name": "Team - Strict",
+  "name": "team_strict",
   "target": "branch",
   "enforcement": "active",
   "conditions": {

@@ -1,5 +1,5 @@
 {
-  "name": "Individual - Tag Strict",
+  "name": "individual_tag_strict",
   "target": "tag",
   "enforcement": "active",
   "conditions": {
