@@ -385,7 +385,7 @@ process_repo() {
   if [[ "$AUDIT_MODE" == true ]]; then
     if [[ -z "$RULESET_LIST" || "$RULESET_LIST" == "[]" ]]; then
       echo -e "${BLUE}[$REPO] NO RULESET FOUND${NC}"
-      record_state "no_ruleset" "$REPO|"
+      record_state "no_ruleset" "$REPO|./rules.sh sync --org --moderate --repo $REPO"
       return
     fi
     
@@ -641,7 +641,20 @@ if [[ "$AUDIT_MODE" == true ]]; then
       fi
     done
   fi
-  if [[ ${#NO_RULESET_REPOS[@]} -gt 0 ]]; then echo -e "\nNo Ruleset repos:\n$(printf ' - %s\n' "${NO_RULESET_REPOS[@]//|/}")"; fi
+  if [[ ${#NO_RULESET_REPOS[@]} -gt 0 ]]; then
+    echo -e "\nNo Ruleset repos (Action Recommended):"
+    for item in "${NO_RULESET_REPOS[@]}"; do
+      # Item format is `|repo|fix command`
+      item="${item#|}"
+      r="${item%%|*}"
+      cmd="${item#*|}"
+      if [[ -n "$cmd" && "$r" != "$cmd" ]]; then
+        echo -e " - $r\n     ↳ Suggestion: $cmd"
+      else
+        echo " - $r"
+      fi
+    done
+  fi
   if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]//|/ (} )")"; exit 1; fi
 else
   CREATED_REPOS=()
