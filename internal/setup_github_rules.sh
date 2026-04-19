@@ -163,34 +163,22 @@ fi
 
 canonicalize_ruleset() {
   jq -S '
-    {
-      name,
-      target,
-      enforcement,
-      bypass_actors: ((.bypass_actors // []) | map({actor_id, actor_type, bypass_mode}) | sort_by(.actor_id, .actor_type)),
-      ref_include: ((.conditions.ref_name.include // []) | sort),
-      ref_exclude: ((.conditions.ref_name.exclude // []) | sort),
-      rules: (
-        (.rules // [])
-        | map(
-            if .type == "pull_request" then
-              {
-                type,
-                parameters: {
-                  dismiss_stale_reviews_on_push: (.parameters.dismiss_stale_reviews_on_push // false),
-                  require_code_owner_review: (.parameters.require_code_owner_review // false),
-                  require_last_push_approval: (.parameters.require_last_push_approval // false),
-                  required_approving_review_count: (.parameters.required_approving_review_count // 0),
-                  required_review_thread_resolution: (.parameters.required_review_thread_resolution // false)
-                }
-              }
-            else
-              { type }
-            end
-          )
-        | sort_by(.type)
-      )
-    }
+    # 1. Volatile Metadata Blacklist
+    del(.id, .node_id, .repository_id, .created_at, .updated_at, .source_type, .source, ._links, .current_user_can_bypass) |
+    
+    # 2. Stable Bypass Actors
+    if .bypass_actors then 
+      .bypass_actors |= (map(del(.id)) | sort_by(.actor_id, .actor_type)) 
+    else . end |
+    
+    # 3. Stable Rules (Future-proof: preserves all unknown fields/parameters)
+    if .rules then 
+      .rules |= sort_by(.type) 
+    else . end |
+    
+    # 4. Stable Conditions
+    if .conditions.ref_name.include then .conditions.ref_name.include |= sort else . end |
+    if .conditions.ref_name.exclude then .conditions.ref_name.exclude |= sort else . end
   '
 }
 
