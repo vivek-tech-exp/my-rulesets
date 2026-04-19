@@ -127,7 +127,7 @@ setup_state_dir() {
   mkdir -p "$STATE_DIR"
   
   # Ensure all possible log files exist so grep/read_state doesn't fail during evaluation
-  touch "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,off_matrix,no_ruleset}.log
+  touch "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,matched_with_extras,off_matrix,no_ruleset}.log
         
   info "State directory: $STATE_DIR"
 }

@@ -392,36 +392,53 @@ process_repo() {
       return
     fi
     
-    local matched=false
+    local total_rulesets
+    local managed_count=0
     local match_name=""
-    local ids
+    local managed_details=()
+    local unmanaged_details=()
     local first_live_json=""
     local first_canonical=""
 
+    total_rulesets="$(printf '%s' "$RULESET_LIST" | jq '. | length')"
     ids="$(printf '%s' "$RULESET_LIST" | jq -r '.[].id')"
+
     for ID in $ids; do
        if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$REPO/rulesets/$ID" 2>"$TMP_ERR")"; then
          continue
        fi
        LIVE_CANONICAL="$(printf '%s' "$LIVE_JSON" | canonicalize_ruleset)"
+       LIVE_NAME="$(printf '%s' "$LIVE_JSON" | jq -r '.name // "unnamed"')"
        
        if [[ -z "$first_live_json" ]]; then
          first_live_json="$LIVE_JSON"
          first_canonical="$LIVE_CANONICAL"
        fi
        
+       local found_in_matrix=false
        for i in "${!POLICY_CANONICALS[@]}"; do
           if [[ "$LIVE_CANONICAL" == "${POLICY_CANONICALS[$i]}" ]]; then
-             matched=true
+             found_in_matrix=true
+             managed_count=$((managed_count + 1))
              match_name="${POLICY_NAMES[$i]}"
-             break 2
+             managed_details+=("$LIVE_NAME")
+             break
           fi
        done
+       
+       if [[ "$found_in_matrix" == false ]]; then
+         unmanaged_details+=("$LIVE_NAME")
+       fi
     done
     
-    if [[ "$matched" == true ]]; then
+    if [[ "$managed_count" -eq 1 && "$total_rulesets" -eq 1 ]]; then
       echo -e "${GREEN}[$REPO] MATCHED: $match_name${NC}"
       record_state "matched" "$REPO|$match_name"
+    elif [[ "$managed_count" -ge 1 ]]; then
+      echo -e "${YELLOW}[$REPO] MATCHED WITH EXTRAS${NC}"
+      info "       ↳ Managed: ${managed_details[*]}"
+      warn "       ↳ Unmanaged: ${unmanaged_details[*]:-None}"
+      record_state "matched_with_extras" "$REPO|$match_name (Total: $total_rulesets, Managed: $managed_count)"
     else
       echo -e "${YELLOW}[$REPO] OFF-MATRIX / CUSTOM${NC}"
       
@@ -612,6 +629,8 @@ read_state() {
 if [[ "$AUDIT_MODE" == true ]]; then
   MATCHED_REPOS=()
   while IFS= read -r line; do MATCHED_REPOS+=("$line"); done < <(read_state "matched.log")
+  MATCHED_EXTRAS_REPOS=()
+  while IFS= read -r line; do MATCHED_EXTRAS_REPOS+=("$line"); done < <(read_state "matched_with_extras.log")
   OFF_MATRIX_REPOS=()
   while IFS= read -r line; do OFF_MATRIX_REPOS+=("$line"); done < <(read_state "off_matrix.log")
   NO_RULESET_REPOS=()
@@ -622,13 +641,15 @@ if [[ "$AUDIT_MODE" == true ]]; then
   while IFS= read -r line; do FAILED_REPOS+=("$line"); done < <(read_state "failed.log")
 
   section "Fleet Discovery Summary"
-  echo "Matched:    ${#MATCHED_REPOS[@]}"
-  echo "Off-Matrix: ${#OFF_MATRIX_REPOS[@]}"
-  echo "No Ruleset: ${#NO_RULESET_REPOS[@]}"
-  echo "Skipped:    ${#SKIPPED_REPOS[@]}"
-  echo "Failed:     ${#FAILED_REPOS[@]}"
+  echo "Matched:         ${#MATCHED_REPOS[@]}"
+  echo "Matched w/Extras: ${#MATCHED_EXTRAS_REPOS[@]}"
+  echo "Off-Matrix:      ${#OFF_MATRIX_REPOS[@]}"
+  echo "No Ruleset:      ${#NO_RULESET_REPOS[@]}"
+  echo "Skipped:         ${#SKIPPED_REPOS[@]}"
+  echo "Failed:          ${#FAILED_REPOS[@]}"
   
   if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched repos:\n$(printf ' - %s\n' "${MATCHED_REPOS[@]//|/ (} )")"; fi
+  if [[ ${#MATCHED_EXTRAS_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched with Extras (Warnings):\n$(printf ' - %s\n' "${MATCHED_EXTRAS_REPOS[@]//|/ (} )")"; fi
   if [[ ${#OFF_MATRIX_REPOS[@]} -gt 0 ]]; then
     echo -e "\nOff-Matrix repos (Action Required):"
     for item in "${OFF_MATRIX_REPOS[@]}"; do
