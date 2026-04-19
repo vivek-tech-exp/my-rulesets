@@ -328,7 +328,7 @@ if [[ "$CAPTURE_MODE" == true ]]; then
   fi
   
   CLEANED_JSON="$(printf '%s' "$LIVE_JSON" | jq --arg new_name "$CAPTURE_NAME" '
-    del(.id, .node_id, .repository_id, .created_at, .updated_at, .source_type, .source) |
+    del(.id, .node_id, .repository_id, .created_at, .updated_at, .source_type, .source, ._links) |
     .name = $new_name
   ')"
   
