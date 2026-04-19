@@ -7,6 +7,9 @@ source "$SCRIPT_DIR/common.sh"
 
 # Script-specific variables
 CONFIG_FILE=""
+SMART_SCOPE=""
+SMART_LEVEL=""
+SMART_TAGS=""
 AUDIT_MODE=false
 CAPTURE_MODE=false
 CAPTURE_NAME=""
@@ -23,7 +26,12 @@ Usage:
   $0 --config <path> [options]
 
 Config:
-  --config <path>             Path to the ruleset JSON policy file (Required)
+  --config <path>             Path to the ruleset JSON policy file (Required if not using Smart Matrix)
+
+Smart Matrix (Alternative to --config):
+  --org | --team | --individual   Select the policy scope
+  --strict | --moderate | --loose Select the policy level
+  --tags                          Target tags instead of branches (optional)
 
 Scope:
   --all                       Apply to all matching repos (default)
@@ -58,6 +66,13 @@ while [[ $# -gt 0 ]]; do
       CONFIG_FILE="$2"
       shift 2
       ;;
+    --org) SMART_SCOPE="org"; shift ;;
+    --team) SMART_SCOPE="team"; shift ;;
+    --individual) SMART_SCOPE="individual"; shift ;;
+    --strict) SMART_LEVEL="strict"; shift ;;
+    --moderate) SMART_LEVEL="moderate"; shift ;;
+    --loose) SMART_LEVEL="loose"; shift ;;
+    --tags) SMART_TAGS="_tags"; shift ;;
     --audit) AUDIT_MODE=true; shift ;;
     --capture-as)
       [[ $# -ge 2 ]] || { error "--capture-as requires a policy name"; exit 1; }
@@ -128,6 +143,11 @@ require_cmd jq
 
 check_auth
 setup_state_dir
+
+# Smart Matrix Resolution
+if [[ -z "$CONFIG_FILE" && -n "$SMART_SCOPE" && -n "$SMART_LEVEL" ]]; then
+  CONFIG_FILE="policies/${SMART_SCOPE}/${SMART_LEVEL}${SMART_TAGS}.json"
+fi
 
 if [[ "$AUDIT_MODE" == true ]]; then
   STATE_DIR="${PWD}/.gh_state_audit_github_rules_${OWNER}"

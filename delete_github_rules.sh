@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 TARGET_RULESET="all"
+SMART_SCOPE=""
+SMART_LEVEL=""
+SMART_TAGS=""
 
 usage() {
   cat <<EOF
@@ -25,6 +28,11 @@ Scope:
 Target:
   --config <path>             Path to JSON policy file (extracts name to delete)
   --name <name>               Delete only rulesets matching this name (default: all rulesets)
+
+Smart Matrix (Alternative to --config):
+  --org | --team | --individual   Select the policy scope
+  --strict | --moderate | --loose Select the policy level
+  --tags                          Target tags instead of branches (optional)
 
 Behavior:
   --parallel <N>              Process N repos concurrently (default: 1)
@@ -49,6 +57,13 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --org) SMART_SCOPE="org"; shift ;;
+    --team) SMART_SCOPE="team"; shift ;;
+    --individual) SMART_SCOPE="individual"; shift ;;
+    --strict) SMART_LEVEL="strict"; shift ;;
+    --moderate) SMART_LEVEL="moderate"; shift ;;
+    --loose) SMART_LEVEL="loose"; shift ;;
+    --tags) SMART_TAGS="_tags"; shift ;;
     --all) MODE="all"; shift ;;
     --repo)
       [[ $# -ge 2 ]] || { error "--repo requires a value"; exit 1; }
@@ -101,6 +116,20 @@ done
 if [[ "$VISIBILITY" != "public" && "$VISIBILITY" != "private" && "$VISIBILITY" != "all" ]]; then
   error "Invalid --visibility value: $VISIBILITY"
   exit 1
+fi
+
+if [[ "$TARGET_RULESET" == "all" && -n "$SMART_SCOPE" && -n "$SMART_LEVEL" ]]; then
+  SMART_CONFIG="policies/${SMART_SCOPE}/${SMART_LEVEL}${SMART_TAGS}.json"
+  if [[ -f "$SMART_CONFIG" ]]; then
+      TARGET_RULESET="$(cat "$SMART_CONFIG" | jq -r .name 2>/dev/null || echo '')"
+      if [[ -z "$TARGET_RULESET" || "$TARGET_RULESET" == "null" ]]; then
+        error "Failed to extract 'name' from $SMART_CONFIG"
+        exit 1
+      fi
+  else
+      error "Smart Matrix file not found: $SMART_CONFIG"
+      exit 1
+  fi
 fi
 
 require_cmd gh

@@ -126,7 +126,10 @@ Once set up, whenever a collaborator modifies a policy inside the `policies/` di
 | Flag | Description | Default |
 |:---|:---|:---|
 | `--config <path>` | **[Required by setup]** Path to JSON policy file | - |
-| `--audit` | **[Fleet Discovery]** Check repos against all policies in `policies/` (replaces `--config`) | `false` |
+| `--org` / `--team` / `--individual` | **[Smart Matrix]** Select the policy scope (alternative to `--config`) | - |
+| `--strict` / `--moderate` / `--loose` | **[Smart Matrix]** Select the policy level (alternative to `--config`) | - |
+| `--tags` | **[Smart Matrix]** Target tags instead of branches | - |
+| `--audit` | **[Fleet Discovery]** Check repos against all policies in `policies/` | `false` |
 | `--capture-as <name>` | **[Policy Onboarding]** Fetch a ruleset, clean it, and save as JSON (replaces `--config`) | - |
 | `--force` | Force update a policy even if the local logic detects no changes | `false` |
 | `--all` | Apply to all matching repos | `true` |
