@@ -381,6 +381,16 @@ That gives you a simple GitOps loop: policy changes happen through pull requests
 - **Retry wrappers:** API calls retry on transient failures with backoff.
 - **Archived repo handling:** Archived or disabled repos are skipped instead of crashing the whole run.
 
+## Contributing
+
+We do not want to reinvent the wheel. We follow the usual open source collaboration standards.
+
+- **Raising Issues & PRs:** Follow the [How to Contribute Guide](https://opensource.guide/how-to-contribute/).
+- **Code of Conduct:** We adhere to the [Contributor Covenant](https://www.contributor-covenant.org/).
+- **Commit Messages:** We follow [Conventional Commits](https://www.conventionalcommits.org/).
+
+Before spending a lot of time on a major change, open an issue first so the direction can be discussed before the work is done.
+
 ---
 
 Built for engineers who value their time.
