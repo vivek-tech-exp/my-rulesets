@@ -123,6 +123,12 @@ check_auth() {
       fi
     fi
   fi
+
+  # Determine if owner is a User or Organization
+  if [[ -n "$OWNER" ]]; then
+    OWNER_TYPE=$(gh api "users/$OWNER" --jq .type 2>/dev/null || echo "User")
+    export OWNER_TYPE
+  fi
 }
 
 # --- State Management ---
