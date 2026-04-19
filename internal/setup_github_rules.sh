@@ -470,7 +470,18 @@ process_repo() {
     return
   fi
 
-  RULESET_ID="$(printf '%s' "$RULESET_LIST" | jq -r --arg name "$RULESET_NAME" '.[] | select(.name == $name) | .id' | head -n1)"
+  local matching_rulesets
+  matching_rulesets="$(printf '%s' "$RULESET_LIST" | jq -c --arg name "$RULESET_NAME" '[.[] | select(.name == $name)]')"
+  local match_count
+  match_count="$(printf '%s' "$matching_rulesets" | jq '. | length')"
+
+  if [[ "$match_count" -gt 1 ]]; then
+    error "[$REPO] Error: Multiple rulesets found with name '$RULESET_NAME'. Manual intervention required to prevent accidental overwrite."
+    record_state "failed" "$REPO|name collision"
+    return
+  fi
+
+  RULESET_ID="$(printf '%s' "$matching_rulesets" | jq -r '.[0].id // empty')"
 
   if [[ -z "$RULESET_ID" || "$RULESET_ID" == "null" ]]; then
     CREATE_PAYLOAD="$(printf '%s' "$BASE_PAYLOAD" | jq '. + {bypass_actors: []}')"
