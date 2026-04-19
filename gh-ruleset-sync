@@ -6,10 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   cat <<EOF
-my-rulesets - Policy-as-Code for GitHub Rulesets
+ruleset-sync - Policy-as-Code for GitHub Rulesets
 
 Usage:
-  $0 <command> [options]
+  gh ruleset-sync <command> [options]
 
 Commands:
   sync      Deploy or update policies
@@ -17,7 +17,7 @@ Commands:
   capture   Extract an existing ruleset from a repo into a policy template
   nuke      Delete rulesets from repositories
 
-Run '$0 <command> --help' for command-specific options.
+Run 'gh ruleset-sync <command> --help' for command-specific options.
 EOF
 }
 
@@ -43,7 +43,7 @@ case "$COMMAND" in
       "$SCRIPT_DIR/internal/setup_github_rules.sh" --capture-as "$CAPTURE_NAME" "$@"
     else
       echo "Error: 'capture' requires a policy name."
-      echo "Example: $0 capture \"My New Policy\" --repo my-repo"
+      echo "Example: gh ruleset-sync capture \"My New Policy\" --repo my-repo"
       exit 1
     fi
     ;;

@@ -340,7 +340,7 @@ if [[ "$CAPTURE_MODE" == true ]]; then
   
   success "Policy captured! Saved to: policies/captured/${CAPTURE_NAME}.json"
   echo "To scale this template to all repos, run:"
-  echo "./setup_github_rules.sh --config policies/captured/${CAPTURE_NAME}.json --all"
+  echo "gh ruleset-sync sync --config policies/captured/${CAPTURE_NAME}.json --all"
   exit 0
 fi
 
@@ -388,7 +388,7 @@ process_repo() {
       local s_scope="${SMART_SCOPE:-org}"
       local s_level="${SMART_LEVEL:-moderate}"
       local s_tags="${SMART_TAGS//_tags/ --tags}"
-      record_state "no_ruleset" "$REPO|./rules.sh sync --$s_scope --$s_level$s_tags --repo $REPO"
+      record_state "no_ruleset" "$REPO|gh ruleset-sync sync --$s_scope --$s_level$s_tags --repo $REPO"
       return
     fi
     
@@ -441,13 +441,13 @@ process_repo() {
           echo -e "       ${BLUE}↳ Drift detected against matrix policy '${live_name}':${NC}"
           diff -u <(printf '%s\n' "${POLICY_CANONICALS[$target_idx]}") <(printf '%s\n' "$first_canonical") | \
             tail -n +3 | sed 's/^/         /' || true
-          record_state "off_matrix" "$REPO|./rules.sh sync --config ${POLICY_PATHS[$target_idx]} --repo $REPO"
+          record_state "off_matrix" "$REPO|gh ruleset-sync sync --config ${POLICY_PATHS[$target_idx]} --repo $REPO"
         else
           echo -e "       ${BLUE}↳ Custom ruleset name: '${live_name}' (No matching matrix template)${NC}"
-          record_state "off_matrix" "$REPO|./rules.sh capture \"${live_name}\" --repo $REPO"
+          record_state "off_matrix" "$REPO|gh ruleset-sync capture \"${live_name}\" --repo $REPO"
         fi
       else
-        record_state "off_matrix" "$REPO|./rules.sh capture \"unknown\" --repo $REPO"
+        record_state "off_matrix" "$REPO|gh ruleset-sync capture \"unknown\" --repo $REPO"
       fi
     fi
     return

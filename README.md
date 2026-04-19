@@ -1,4 +1,4 @@
-# 🛡️ my-rulesets (Governance-as-Code)
+# 🛡️ ruleset-sync (Governance-as-Code)
 
 [![GitHub CLI](https://img.shields.io/badge/gh-v2.0+-blue.svg)](https://github.com/cli/cli)
 [![Bash](https://img.shields.io/badge/bash-3.2+-lightgrey.svg)](https://www.gnu.org/software/bash/)
@@ -8,16 +8,16 @@
 > ### 🚨 Urgent: August 30th Tag Migration
 > GitHub is deprecating legacy "Protected Tags." To keep your releases secure, all repositories must be migrated to the new **Tag Rulesets** engine by **August 30th**.
 >
-> Don't do it manually. `my-rulesets` includes built-in templates to migrate your entire organization to the new system in seconds:
+> Don't do it manually. `ruleset-sync` includes built-in templates to migrate your entire organization to the new system in seconds:
 > ```bash
-> ./rules.sh sync --org --moderate --tags --all
+> gh ruleset-sync sync --org --moderate --tags --all
 > ```
 
 **The Enterprise Problem:** 
 Managing branch protections manually across dozens (or hundreds) of GitHub repositories is a scaling nightmare. Doing it through the UI takes hours, inevitably leads to configuration drift, and leaves security gaps where teams bypass standard compliance protocols unnoticed.
 
 **The Solution:** 
-`my-rulesets` acts as a **Policy-as-Code** automated engine. You define your organizational rulesets once in JSON, and this tool applies, audits, and enforces those rules across your entire fleet in seconds—powered by safe, concurrent GitHub API automation.
+`ruleset-sync` acts as a **Policy-as-Code** automated engine. You define your organizational rulesets once in JSON, and this tool applies, audits, and enforces those rules across your entire fleet in seconds—powered by safe, concurrent GitHub API automation.
 
 ---
 
@@ -27,7 +27,7 @@ Detect configuration drift silently without touching live systems...
 
 ```bash
 # Instantly audit your entire public fleet across all policies
-$ ./rules.sh audit --org --all --visibility public --parallel 5
+$ gh ruleset-sync audit --org --all --visibility public --parallel 5
 
 == Fleet Discovery Summary ==
 Matched:    45
@@ -36,16 +36,16 @@ Failed:     0
 
 Off-Matrix repos (Action Required):
  - legacy-auth-service
-     ↳ Fix: ./rules.sh sync --config policies/org/strict.json --repo legacy-auth-service
+     ↳ Fix: gh ruleset-sync sync --config policies/org/strict.json --repo legacy-auth-service
  - experiments-repo
-     ↳ Fix: ./rules.sh capture "Custom Override" --repo experiments-repo
+     ↳ Fix: gh ruleset-sync capture "Custom Override" --repo experiments-repo
 ```
 
 ...then fix it automatically!
 
 ```bash
 # Instantly push the strict organizational template to the disconnected repository
-$ ./rules.sh sync --org --strict --repo legacy-auth-service
+$ gh ruleset-sync sync --org --strict --repo legacy-auth-service
 
 [legacy-auth-service] Processing...
 [legacy-auth-service] Updated ruleset
@@ -56,24 +56,23 @@ $ ./rules.sh sync --org --strict --repo legacy-auth-service
 
 ## 🏁 Quick Start
 
-**1. Clone & Authenticate**
-You will need the [GitHub CLI](https://cli.github.com/) authenticated with an account capable of managing the spaces you wish to target. 
+**1. Install Extension**
+You will need the [GitHub CLI](https://cli.github.com/) authenticated.
 ```bash
-git clone https://github.com/vivek-tech-exp/my-rulesets.git
-cd my-rulesets
+gh extension install vivek-tech-exp/gh-ruleset-sync
 gh auth login
 ```
 
 **2. Preview Changes (Dry Run)**
 Target a repository and simulate applying the moderate team-level ruleset template:
 ```bash
-./rules.sh sync --team --moderate --repo my-testing-repo --dry-run
+gh ruleset-sync sync --team --moderate --repo my-testing-repo --dry-run
 ```
 
 **3. Deploy the Policy**
 Remove `--dry-run` to blast it live!
 ```bash
-./rules.sh sync --team --moderate --repo my-testing-repo
+gh ruleset-sync sync --team --moderate --repo my-testing-repo
 ```
 
 ---
