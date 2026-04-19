@@ -146,7 +146,7 @@ setup_state_dir
 
 # Smart Matrix Resolution
 if [[ -z "$CONFIG_FILE" && -n "$SMART_SCOPE" && -n "$SMART_LEVEL" ]]; then
-  CONFIG_FILE="policies/${SMART_SCOPE}/${SMART_LEVEL}${SMART_TAGS}.json"
+  CONFIG_FILE="$SCRIPT_DIR/../policies/${SMART_SCOPE}/${SMART_LEVEL}${SMART_TAGS}.json"
 fi
 
 if [[ "$AUDIT_MODE" == true ]]; then
@@ -194,15 +194,15 @@ if [[ "$AUDIT_MODE" == true ]]; then
   POLICY_COUNT=0
   POLICY_NAMES=()
   POLICY_CANONICALS=()
-  if [[ -d "$SCRIPT_DIR/policies" ]]; then
+  if [[ -d "$SCRIPT_DIR/../policies" ]]; then
     while IFS= read -r -d '' p; do
        POLICY_NAMES+=("$(jq -r .name < "$p")")
        POLICY_CANONICALS+=("$(cat "$p" | canonicalize_ruleset)")
        POLICY_COUNT=$((POLICY_COUNT + 1))
-    done < <(find "$SCRIPT_DIR/policies" -type f -name "*.json" -print0)
+    done < <(find "$SCRIPT_DIR/../policies" -type f -name "*.json" -print0)
   fi
   if [[ "$POLICY_COUNT" -eq 0 ]]; then
-    error "Audit mode: No policies found in $SCRIPT_DIR/policies/"
+    error "Audit mode: No policies found in $SCRIPT_DIR/../policies/"
     exit 1
   fi
 elif [[ "$CAPTURE_MODE" == false ]]; then
@@ -286,7 +286,7 @@ if [[ "$CAPTURE_MODE" == true ]]; then
     .name = $new_name
   ')"
   
-  CAPTURE_DIR="$SCRIPT_DIR/policies/captured"
+  CAPTURE_DIR="$SCRIPT_DIR/../policies/captured"
   mkdir -p "$CAPTURE_DIR"
   TARGET_FILE="$CAPTURE_DIR/${CAPTURE_NAME}.json"
   

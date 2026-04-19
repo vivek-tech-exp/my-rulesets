@@ -119,7 +119,7 @@ if [[ "$VISIBILITY" != "public" && "$VISIBILITY" != "private" && "$VISIBILITY" !
 fi
 
 if [[ "$TARGET_RULESET" == "all" && -n "$SMART_SCOPE" && -n "$SMART_LEVEL" ]]; then
-  SMART_CONFIG="policies/${SMART_SCOPE}/${SMART_LEVEL}${SMART_TAGS}.json"
+  SMART_CONFIG="$SCRIPT_DIR/../policies/${SMART_SCOPE}/${SMART_LEVEL}${SMART_TAGS}.json"
   if [[ -f "$SMART_CONFIG" ]]; then
       TARGET_RULESET="$(cat "$SMART_CONFIG" | jq -r .name 2>/dev/null || echo '')"
       if [[ -z "$TARGET_RULESET" || "$TARGET_RULESET" == "null" ]]; then

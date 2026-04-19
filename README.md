@@ -62,46 +62,46 @@ This toolset separates policy definitions from execution logic:
 ### 1. Setting Up & Updating Rulesets
 ```bash
 # Test a policy on a single repository (Dry Run)
-./setup_github_rules.sh --config policies/team/moderate.json --repo my-fi --dry-run
+./rules.sh sync --config policies/team/moderate.json --repo my-fi --dry-run
 
-# Apply structural policies to specific repositories
-./setup_github_rules.sh --config policies/individual/strict.json --repos "my-fi, borderless-buy"
+# Apply structural policies leveraging the Smart Matrix
+./rules.sh sync --individual --strict --repos "my-fi, borderless-buy"
 
 # Scale out: Apply org-level rules to ALL public repositories, processing 5 at a time
-./setup_github_rules.sh --config policies/org/strict.json --all --visibility public --parallel 5
+./rules.sh sync --org --strict --all --visibility public --parallel 5
 
 # Security Audit: Compare live state against strict policy without making changes
-./setup_github_rules.sh --config policies/org/strict.json --all --dry-run
+./rules.sh sync --org --strict --all --dry-run
 ```
 
 ### 2. Fleet Discovery (Audit Mode)
 ```bash
-# Scan a specific repository against all 9 policies to map drift
-./setup_github_rules.sh --audit --repo my-rulesets
+# Scan a specific repository against all policies to map drift
+./rules.sh audit --repo my-rulesets
 
 # Scan the entire public organization fleet against all policies concurrently
-./setup_github_rules.sh --audit --all --visibility public --parallel 5
+./rules.sh audit --all --visibility public --parallel 5
 ```
 
 ### 3. Policy Onboarding (Capture Mode)
 ```bash
 # Extract the first ruleset from 'my-repo', strip metadata, and save as a template
-./setup_github_rules.sh --capture-as "My Standard Rules" --repo my-repo
+./rules.sh capture "My Standard Rules" --repo my-repo
 
 # Then apply the captured template organization-wide
-./setup_github_rules.sh --config policies/captured/My_Standard_Rules.json --all
+./rules.sh sync --config policies/captured/My_Standard_Rules.json --all
 ```
 
 ### 4. Deleting Rulesets
 ```bash
-# Extract the target ruleset name from the JSON config and safely simulate deleting it
-./delete_github_rules.sh --config policies/team/moderate.json --all --dry-run
+# Leverage the Smart Matrix to safely simulate deleting a specific policy tier
+./rules.sh nuke --team --moderate --all --dry-run
 
-# Delete a ruleset via literal string name instead of config file
-./delete_github_rules.sh --repos "my-fi, old-project" --name "Protect Master" --yes
+# Delete a ruleset via literal string name instead of config parameters
+./rules.sh nuke --repos "my-fi, old-project" --name "Protect Master" --yes
 
 # Nuke Option: Delete ALL rulesets on a specific repository
-./delete_github_rules.sh --repo my-test-repo
+./rules.sh nuke --repo my-test-repo
 ```
 
 ---
