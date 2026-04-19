@@ -1,5 +1,5 @@
 {
-    "name": "Org - Tag Loose",
+    "name": "org_tag_loose",
     "target": "tag",
     "enforcement": "active",
     "conditions": {

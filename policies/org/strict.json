@@ -1,5 +1,5 @@
 {
-  "name": "Org - Strict",
+  "name": "org_strict",
   "target": "branch",
   "enforcement": "active",
   "conditions": {
@@ -8,6 +8,7 @@
       "exclude": []
     }
   },
+  "bypass_actors": [],
   "rules": [
     { "type": "deletion" },
     { "type": "non_fast_forward" },

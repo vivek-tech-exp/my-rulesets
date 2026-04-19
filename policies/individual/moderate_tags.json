@@ -1,5 +1,5 @@
 {
-  "name": "Individual - Tag Moderate",
+  "name": "individual_tag_moderate",
   "target": "tag",
   "enforcement": "active",
   "conditions": {

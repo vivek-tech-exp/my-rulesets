@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # common.sh - Shared logic for GitHub ruleset scripts
+# shellcheck disable=SC2034
 
 # --- Default Global Variables ---
 OWNER=""
@@ -110,12 +111,24 @@ check_auth() {
       info "(Tip: You can skip this prompt in the future by passing: --owner $OWNER)"
       echo "----------------------------------------"
     else
-      # Fallback to personal account for non-interactive or explicit bypass
+      # Handle non-interactive environments strictly
+      if [[ ! -t 0 && -n "$user_orgs" ]]; then
+        error "Error: Multiple organizations detected in a non-interactive environment. You must specify the target account using --owner."
+        exit 1
+      fi
+
+      # Fallback to personal account for explicit interactive bypass (e.g., --yes)
       OWNER="$personal_user"
       if [[ -n "$user_orgs" && "$QUIET" == false ]]; then
-         info "Defaulting to personal account ($OWNER) because interactive selection is unavailable or bypassed."
+         info "Defaulting to personal account ($OWNER) because interactive selection is bypassed."
       fi
     fi
+  fi
+
+  # Determine if owner is a User or Organization
+  if [[ -n "$OWNER" ]]; then
+    OWNER_TYPE=$(gh api "users/$OWNER" --jq .type 2>/dev/null || echo "User")
+    export OWNER_TYPE
   fi
 }
 
@@ -123,13 +136,43 @@ check_auth() {
 setup_state_dir() {
   local script_name="${1:-$(basename "$0" .sh)}"
   
-  STATE_DIR="${PWD}/.gh_state_${script_name}_${OWNER}"
-  mkdir -p "$STATE_DIR"
+  # Determine base state directory (XDG compliant)
+  local config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
+  local base_state_dir="$config_root/gh-ruleset-sync/state"
+  
+  # Final centralized directory structure by owner and command
+  STATE_DIR="$base_state_dir/${OWNER}/${script_name}"
+  
+  # Detection check for legacy state folders in current directory
+  local legacy_dir="./.gh_state_${script_name}_${OWNER}"
+  if [[ -d "$legacy_dir" ]]; then
+    warn "Legacy state directory detected in current folder: $legacy_dir"
+    warn "Note: I am now using decentralized state: $STATE_DIR"
+    warn "If you want to resume a previous run, please move the contents to the new path."
+    echo "----------------------------------------"
+  fi
+
+  mkdir -p "$STATE_DIR/backups"
   
   # Ensure all possible log files exist so grep/read_state doesn't fail during evaluation
-  touch "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,off_matrix,no_ruleset}.log
+  touch "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,matched_with_extras,off_matrix,no_ruleset}.log
         
   info "State directory: $STATE_DIR"
+}
+
+# --- State Management ---
+backup_ruleset() {
+  local repo="$1"
+  local ruleset_name="$2"
+  local content="$3"
+  local safe_repo="${repo//\//_}"
+  local safe_ruleset="${ruleset_name//\//_}"
+  
+  # Atomic backup: only save the first time it is encountered in a session
+  local backup_path="$STATE_DIR/backups/${safe_repo}__${safe_ruleset}.json"
+  if [[ ! -f "$backup_path" ]]; then
+    echo "$content" > "$backup_path"
+  fi
 }
 
 # POSIX atomic append (safe for strings < PIPE_BUF / 512 bytes)
@@ -156,9 +199,11 @@ check_rate_limit() {
     warn "PRIMARY API RATE LIMIT EXHAUSTED ($remaining requests left)."
     
     if date --version >/dev/null 2>&1; then
-      local reset_str="$(date -d "@$reset_time" '+%I:%M %p')"
+      local reset_str
+      reset_str="$(date -d "@$reset_time" '+%I:%M %p')"
     else
-      local reset_str="$(date -r "$reset_time" '+%I:%M %p')"
+      local reset_str
+      reset_str="$(date -r "$reset_time" '+%I:%M %p')"
     fi
 
     warn "GitHub will reset your quota at $reset_str."
@@ -169,7 +214,7 @@ check_rate_limit() {
     
     warn "Simply run the exact same command later to resume from where it left off."
     echo "----------------------------------------"
-    exit 429
+    exit 173
   fi
 }
 
@@ -230,4 +275,32 @@ get_repos() {
   fi
 
   gh "${args[@]+"${args[@]}"}" --jq '.[].name'
+}
+
+fetch_rulesets() {
+  local REPO="$1"
+  local TMP_ERR="$2"
+  local LIST
+  
+  # Use -s 'add' to merge paginated results into a single array
+  # If no output is produced (e.g. empty), result will be null
+  if ! LIST="$(with_retry "$TMP_ERR" gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR" | jq -s 'add // []')"; then
+    return 1
+  fi
+  
+  # Validate it's an array
+  local TYPE
+  TYPE="$(echo "$LIST" | jq -r 'type')"
+  if [[ "$TYPE" != "array" ]]; then
+    local MSG
+    MSG="$(echo "$LIST" | jq -r '.message // empty')"
+    if [[ -n "$MSG" ]]; then
+       echo "$MSG" > "$TMP_ERR"
+    else
+       echo "Response is not a valid JSON array (type: $TYPE)" > "$TMP_ERR"
+    fi
+    return 1
+  fi
+  
+  echo "$LIST"
 }

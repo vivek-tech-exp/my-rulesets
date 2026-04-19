@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 # Robust source pathing
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +17,7 @@ DEBUG_DIFF=false
 ENFORCE_NO_BYPASS=false
 REMOVE_BYPASS=false
 FORCE_UPDATE=false
+ROLLBACK_MODE=false
 
 usage() {
   cat <<EOF
@@ -55,9 +55,45 @@ Behavior:
   --debug-diff                Print canonical desired/live JSON when repo differs
   --yes                       Skip confirmation prompts
   --quiet                     Reduce non-essential output
+  --rollback                  Undo the changes from the last sync session
   -h, --help                  Show this help
 EOF
 }
+
+canonicalize_ruleset() {
+  jq -S '
+    # 1. Volatile Metadata Blacklist
+    del(.id, .node_id, .repository_id, .created_at, .updated_at, .source_type, .source, ._links, .current_user_can_bypass) |
+
+    # 2. Normalize Bypass Actors (handle missing/null as empty list)
+    .bypass_actors = (.bypass_actors // [] | map(del(.id)) | sort_by(.actor_id, .actor_type)) |
+
+    # 3. Stable Rules (Future-proof: preserves all unknown fields/parameters)
+    if .rules then
+      .rules |= (map(if type == "object" then del(.id) else . end) | sort_by(.type))
+    else . end |
+
+    # 4. Stable/Normalized Conditions
+    if .conditions.ref_name then
+      if .conditions.ref_name.include then .conditions.ref_name.include |= sort else . end |
+      if .conditions.ref_name.exclude then .conditions.ref_name.exclude |= sort else . end
+    else . end
+  '
+}
+
+read_state() {
+  local file="$STATE_DIR/$1"
+  if [[ -f "$file" ]]; then
+    while IFS= read -r line; do
+      if [[ -n "$line" ]]; then
+        echo "${line#|}"
+      fi
+    done < "$file"
+  fi
+}
+
+main() {
+set -euo pipefail
 
 for raw_arg in "$@"; do normalize_unicode_dashes "$raw_arg"; done
 
@@ -130,6 +166,7 @@ while [[ $# -gt 0 ]]; do
     --debug-diff) DEBUG_DIFF=true; shift ;;
     --yes) YES=true; shift ;;
     --quiet) QUIET=true; shift ;;
+    --rollback) ROLLBACK_MODE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) error "Unknown option: $1"; echo; usage; exit 1 ;;
   esac
@@ -161,38 +198,104 @@ if [[ "$AUDIT_MODE" == true ]]; then
   setup_state_dir "audit_github_rules"
 fi
 
-canonicalize_ruleset() {
-  jq -S '
-    {
-      name,
-      target,
-      enforcement,
-      bypass_actors: ((.bypass_actors // []) | map({actor_id, actor_type, bypass_mode}) | sort_by(.actor_id, .actor_type)),
-      ref_include: ((.conditions.ref_name.include // []) | sort),
-      ref_exclude: ((.conditions.ref_name.exclude // []) | sort),
-      rules: (
-        (.rules // [])
-        | map(
-            if .type == "pull_request" then
-              {
-                type,
-                parameters: {
-                  dismiss_stale_reviews_on_push: (.parameters.dismiss_stale_reviews_on_push // false),
-                  require_code_owner_review: (.parameters.require_code_owner_review // false),
-                  require_last_push_approval: (.parameters.require_last_push_approval // false),
-                  required_approving_review_count: (.parameters.required_approving_review_count // 0),
-                  required_review_thread_resolution: (.parameters.required_review_thread_resolution // false)
-                }
-              }
-            else
-              { type }
-            end
-          )
-        | sort_by(.type)
-      )
-    }
-  '
-}
+if [[ "$ROLLBACK_MODE" == true ]]; then
+  section "Rollback Mode"
+  
+  UPDATED_REPOS=()
+  while IFS= read -r line; do [[ -n "$line" ]] && UPDATED_REPOS+=("$line"); done < <(read_state "updated.log")
+  CREATED_REPOS=()
+  while IFS= read -r line; do [[ -n "$line" ]] && CREATED_REPOS+=("$line"); done < <(read_state "created.log")
+
+  TOTAL_ROLLBACK=$(( ${#UPDATED_REPOS[@]} + ${#CREATED_REPOS[@]} ))
+  
+  if [[ "$TOTAL_ROLLBACK" -eq 0 ]]; then
+    warn "No changes found to rollback in the current session state."
+    exit 0
+  fi
+
+  # Determine session timestamp (Mac/Linux compatible)
+  if date --version >/dev/null 2>&1; then
+    M_TIME="$(date -d "@$(stat -c %Y "$STATE_DIR/updated.log")" '+%Y-%m-%d %I:%M %p')"
+  else
+    M_TIME="$(date -r "$(stat -f %m "$STATE_DIR/updated.log")" '+%Y-%m-%d %I:%M %p')"
+  fi
+
+  warn "⚠ Proceeding with ROLLBACK."
+  echo "This will revert ${#UPDATED_REPOS[@]} updates and delete ${#CREATED_REPOS[@]} creations from session: $M_TIME"
+  
+  if [[ "$YES" == false ]]; then
+    read -r -p "Are you sure you want to continue? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { warn "Rollback cancelled."; exit 0; }
+  fi
+
+  echo "----------------------------------------"
+
+  if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then
+    for item in "${UPDATED_REPOS[@]}"; do
+      REPO="${item%%|*}"
+      NAME="${item#*|}"
+      SAFE_REPO="${REPO//\//_}"
+      
+      # Discovery: find the backup corresponding to this repo
+      # If NAME is present, we try a specific match, otherwise use head -n1
+      if [[ -n "$NAME" && "$NAME" != "$REPO" ]]; then
+         SAFE_RULESET="${NAME//\//_}"
+         BACKUP_FILE="$STATE_DIR/backups/${SAFE_REPO}__${SAFE_RULESET}.json"
+      else
+         BACKUP_FILE="$(ls "$STATE_DIR/backups/${SAFE_REPO}__"*.json 2>/dev/null | head -n1)"
+      fi
+      
+      if [[ -z "$BACKUP_FILE" || ! -f "$BACKUP_FILE" ]]; then
+        error "[$REPO] Backup file missing in $STATE_DIR/backups/. Cannot restore."
+        continue
+      fi
+
+      info "[$REPO] Restoring configuration..."
+      
+      RULE_NAME="$(jq -r .name < "$BACKUP_FILE")"
+      RULE_ID="$(gh api "/repos/$OWNER/$REPO/rulesets" --jq ".[] | select(.name == \"$RULE_NAME\") | .id")"
+
+      if [[ -z "$RULE_ID" ]]; then
+         error "[$REPO] Could not find ruleset '$RULE_NAME' to restore."
+         continue
+      fi
+
+      if gh api --method PUT "/repos/$OWNER/$REPO/rulesets/$RULE_ID" --input "$BACKUP_FILE" >/dev/null 2>&1; then
+        success "[$REPO] Restored successfully."
+      else
+        error "[$REPO] Failed to restore."
+      fi
+    done
+  fi
+
+  if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then
+    for item in "${CREATED_REPOS[@]}"; do
+      REPO="${item%%|*}"
+      NAME="${item#*|}"
+      
+      if [[ -z "$NAME" || "$NAME" == "$REPO" ]]; then
+         # Fallback if name wasn't recorded
+         NAME="${RULESET_NAME:-}"
+      fi
+
+      info "[$REPO] Deleting newly created ruleset..."
+      
+      if [[ -n "$NAME" ]]; then
+         ID="$(gh api "/repos/$OWNER/$REPO/rulesets" --jq ".[] | select(.name == \"$NAME\") | .id")"
+         if [[ -n "$ID" ]]; then
+            gh api --method DELETE "/repos/$OWNER/$REPO/rulesets/$ID" >/dev/null 2>&1 && success "[$REPO] Deleted '$NAME'." || error "[$REPO] Delete failed."
+         else
+            warn "[$REPO] Could not find ruleset '$NAME' to delete."
+         fi
+      else
+         warn "[$REPO] Cannot delete creation without knowing ruleset name. Manual deletion required."
+      fi
+    done
+  fi
+
+  section "Rollback Complete"
+  exit 0
+fi
 
 if [[ "$AUDIT_MODE" == true ]]; then
   POLICY_COUNT=0
@@ -230,7 +333,11 @@ confirm_scope() {
   if [[ "$YES" == true || "$DRY_RUN" == true ]]; then return 0; fi
 
   if [[ "$MODE" == "all" && "$repo_count" -gt 1 ]]; then
-    warn "You are about to apply rulesets to multiple repositories ($repo_count)."
+    if [[ "$AUDIT_MODE" == true ]]; then
+      info "You are about to scan multiple repositories for drift ($repo_count)."
+    else
+      warn "You are about to apply rulesets to multiple repositories ($repo_count)."
+    fi
     echo "  Owner: $OWNER"
     echo "  Visibility: $VISIBILITY"
     echo "  Include forks: $INCLUDE_FORKS"
@@ -370,59 +477,85 @@ process_repo() {
   
   info "[$REPO] Processing..."
 
-  if ! RULESET_LIST="$(with_retry "$TMP_ERR" gh api --paginate "/repos/$OWNER/$REPO/rulesets" 2>"$TMP_ERR")"; then
+  if ! RULESET_LIST="$(fetch_rulesets "$REPO" "$TMP_ERR")"; then
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
       warn "[$REPO] Skipped (Archived)"
       record_state "skipped" "$REPO|archived"
       return
     fi
-    error "[$REPO] Failed to list rulesets: $ERR_MSG"
-    record_state "failed" "$REPO|"
+    error "[$REPO] Failed to fetch rulesets: $ERR_MSG"
+    record_state "failed" "$REPO|$ERR_MSG"
     return
   fi
 
   if [[ "$AUDIT_MODE" == true ]]; then
     if [[ -z "$RULESET_LIST" || "$RULESET_LIST" == "[]" ]]; then
       echo -e "${BLUE}[$REPO] NO RULESET FOUND${NC}"
-      local s_scope="${SMART_SCOPE:-org}"
+      local s_scope="$SMART_SCOPE"
+      if [[ -z "$s_scope" ]]; then
+        if [[ "${OWNER_TYPE:-}" == "User" ]]; then
+          s_scope="individual"
+        else
+          s_scope="org"
+        fi
+      fi
       local s_level="${SMART_LEVEL:-moderate}"
       local s_tags="${SMART_TAGS//_tags/ --tags}"
       record_state "no_ruleset" "$REPO|gh ruleset-sync sync --$s_scope --$s_level$s_tags --repo $REPO"
       return
     fi
     
-    local matched=false
+    local managed_rulesets=()
+    local unmanaged_rulesets=()
     local match_name=""
-    local ids
     local first_live_json=""
     local first_canonical=""
 
-    ids="$(printf '%s' "$RULESET_LIST" | jq -r '.[].id')"
-    for ID in $ids; do
+    local rule_ids=()
+    while IFS= read -r id; do
+      [[ -n "$id" ]] && rule_ids+=("$id")
+    done < <(printf '%s' "$RULESET_LIST" | jq -r '.[].id')
+
+    for ID in "${rule_ids[@]}"; do
        if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$REPO/rulesets/$ID" 2>"$TMP_ERR")"; then
          continue
        fi
        LIVE_CANONICAL="$(printf '%s' "$LIVE_JSON" | canonicalize_ruleset)"
+       LIVE_NAME="$(printf '%s' "$LIVE_JSON" | jq -r '.name // "unnamed"')"
        
        if [[ -z "$first_live_json" ]]; then
          first_live_json="$LIVE_JSON"
          first_canonical="$LIVE_CANONICAL"
        fi
        
+       local found_in_matrix=false
        for i in "${!POLICY_CANONICALS[@]}"; do
           if [[ "$LIVE_CANONICAL" == "${POLICY_CANONICALS[$i]}" ]]; then
-             matched=true
+             found_in_matrix=true
+             managed_rulesets+=("$LIVE_NAME")
              match_name="${POLICY_NAMES[$i]}"
-             break 2
+             break
           fi
        done
+       
+       if [[ "$found_in_matrix" == false ]]; then
+         unmanaged_rulesets+=("$LIVE_NAME")
+       fi
     done
     
-    if [[ "$matched" == true ]]; then
+    local m_count=${#managed_rulesets[@]}
+    local u_count=${#unmanaged_rulesets[@]}
+
+    if [[ "$m_count" -eq 1 && "$u_count" -eq 0 ]]; then
       echo -e "${GREEN}[$REPO] MATCHED: $match_name${NC}"
       record_state "matched" "$REPO|$match_name"
-    else
+    elif [[ "$m_count" -ge 1 && "$u_count" -gt 0 ]]; then
+      echo -e "${YELLOW}[$REPO] MATCHED WITH EXTRAS${NC}"
+      info "       ↳ Managed: ${managed_rulesets[*]}"
+      warn "       ↳ Unmanaged: ${unmanaged_rulesets[*]}"
+      record_state "matched_with_extras" "$REPO|$match_name (Managed: $m_count, Unmanaged: $u_count)"
+    elif [[ "$m_count" -eq 0 ]]; then
       echo -e "${YELLOW}[$REPO] OFF-MATRIX / CUSTOM${NC}"
       
       if [[ -n "$first_live_json" ]]; then
@@ -449,11 +582,26 @@ process_repo() {
       else
         record_state "off_matrix" "$REPO|gh ruleset-sync capture \"unknown\" --repo $REPO"
       fi
+    else
+      echo -e "${YELLOW}[$REPO] MATCHED WITH EXTRAS (Multiple Policies)${NC}"
+      info "       ↳ Managed: ${managed_rulesets[*]}"
+      record_state "matched_with_extras" "$REPO|$match_name (Multiple Managed: $m_count)"
     fi
     return
   fi
 
-  RULESET_ID="$(printf '%s' "$RULESET_LIST" | jq -r --arg name "$RULESET_NAME" '.[] | select(.name == $name) | .id' | head -n1)"
+  local matching_rulesets
+  matching_rulesets="$(printf '%s' "$RULESET_LIST" | jq -c --arg name "$RULESET_NAME" '[.[] | select(.name == $name)]')"
+  local match_count
+  match_count="$(printf '%s' "$matching_rulesets" | jq '. | length')"
+
+  if [[ "$match_count" -gt 1 ]]; then
+    error "[$REPO] Error: Multiple rulesets found with name '$RULESET_NAME'. Manual intervention required to prevent accidental overwrite."
+    record_state "failed" "$REPO|name collision"
+    return
+  fi
+
+  RULESET_ID="$(printf '%s' "$matching_rulesets" | jq -r '.[0].id // empty')"
 
   if [[ -z "$RULESET_ID" || "$RULESET_ID" == "null" ]]; then
     CREATE_PAYLOAD="$(printf '%s' "$BASE_PAYLOAD" | jq '. + {bypass_actors: []}')"
@@ -469,7 +617,7 @@ process_repo() {
         "/repos/$OWNER/$REPO/rulesets" \
         --input - <<<"$CREATE_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
         success "[$REPO] Created ruleset"
-        record_state "created" "$REPO|"
+        record_state "created" "$REPO|$RULESET_NAME"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
@@ -490,6 +638,8 @@ process_repo() {
     return
   fi
 
+  backup_ruleset "$REPO" "$RULESET_NAME" "$LIVE_JSON"
+
   if [[ "$ENFORCE_NO_BYPASS" == true ]]; then
     BYPASS_COUNT="$(printf '%s' "$LIVE_JSON" | jq '.bypass_actors | length')"
     if [[ "$BYPASS_COUNT" -gt 0 ]]; then
@@ -504,7 +654,15 @@ process_repo() {
     --argjson live "$LIVE_JSON" \
     --arg remove_bypass "$REMOVE_BYPASS" '
     $base + {
-      bypass_actors: (if $remove_bypass == "true" then [] else ($live.bypass_actors // []) end),
+      bypass_actors: (
+        if $remove_bypass == "true" then
+          []
+        elif (($base.bypass_actors // null) | type) == "array" then
+          $base.bypass_actors
+        else
+          ($live.bypass_actors // [])
+        end
+      ),
       rules: (
         $base.rules | map(
           . as $rule |
@@ -549,7 +707,7 @@ process_repo() {
         else
           success "[$REPO] Updated ruleset"
         fi
-        record_state "updated" "$REPO|"
+        record_state "updated" "$REPO|$RULESET_NAME"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
@@ -598,20 +756,11 @@ for pid in "${pids[@]+"${pids[@]}"}"; do
   fi
 done
 
-read_state() {
-  local file="$STATE_DIR/$1"
-  if [[ -f "$file" ]]; then
-    while IFS= read -r line; do
-      if [[ -n "$line" ]]; then
-        echo "${line#|}"
-      fi
-    done < "$file"
-  fi
-}
-
 if [[ "$AUDIT_MODE" == true ]]; then
   MATCHED_REPOS=()
   while IFS= read -r line; do MATCHED_REPOS+=("$line"); done < <(read_state "matched.log")
+  MATCHED_EXTRAS_REPOS=()
+  while IFS= read -r line; do MATCHED_EXTRAS_REPOS+=("$line"); done < <(read_state "matched_with_extras.log")
   OFF_MATRIX_REPOS=()
   while IFS= read -r line; do OFF_MATRIX_REPOS+=("$line"); done < <(read_state "off_matrix.log")
   NO_RULESET_REPOS=()
@@ -622,43 +771,58 @@ if [[ "$AUDIT_MODE" == true ]]; then
   while IFS= read -r line; do FAILED_REPOS+=("$line"); done < <(read_state "failed.log")
 
   section "Fleet Discovery Summary"
-  echo "Matched:    ${#MATCHED_REPOS[@]}"
-  echo "Off-Matrix: ${#OFF_MATRIX_REPOS[@]}"
-  echo "No Ruleset: ${#NO_RULESET_REPOS[@]}"
-  echo "Skipped:    ${#SKIPPED_REPOS[@]}"
-  echo "Failed:     ${#FAILED_REPOS[@]}"
+  echo "Matched:         ${#MATCHED_REPOS[@]}"
+  echo "Matched w/Extras: ${#MATCHED_EXTRAS_REPOS[@]}"
+  echo "Off-Matrix:      ${#OFF_MATRIX_REPOS[@]}"
+  echo "No Ruleset:      ${#NO_RULESET_REPOS[@]}"
+  echo "Skipped:         ${#SKIPPED_REPOS[@]}"
+  echo "Failed:          ${#FAILED_REPOS[@]}"
   
-  if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched repos:\n$(printf ' - %s\n' "${MATCHED_REPOS[@]//|/ (} )")"; fi
+  if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then 
+    echo -e "\nMatched repos:"
+    for item in "${MATCHED_REPOS[@]}"; do
+      r="${item%%|*}"
+      m="${item#*|}"
+      echo " - $r ($m)"
+    done
+  fi
+
+  if [[ ${#MATCHED_EXTRAS_REPOS[@]} -gt 0 ]]; then 
+    echo -e "\nMatched with Extras (Warnings):"
+    for item in "${MATCHED_EXTRAS_REPOS[@]}"; do
+      r="${item%%|*}"
+      m="${item#*|}"
+      echo " - $r ($m)"
+    done
+  fi
+
   if [[ ${#OFF_MATRIX_REPOS[@]} -gt 0 ]]; then
     echo -e "\nOff-Matrix repos (Action Required):"
     for item in "${OFF_MATRIX_REPOS[@]}"; do
-      # Item format is `|repo|fix command`
-      # Strip leading `|`
-      item="${item#|}"
       r="${item%%|*}"
       cmd="${item#*|}"
-      if [[ "$r" != "$cmd" ]]; then
-        echo -e " - $r\n     ↳ Fix: $cmd"
-      else
-        echo " - $r"
-      fi
+      echo -e " - $r\n     ↳ Action: $cmd"
     done
   fi
+
   if [[ ${#NO_RULESET_REPOS[@]} -gt 0 ]]; then
     echo -e "\nNo Ruleset repos (Action Recommended):"
     for item in "${NO_RULESET_REPOS[@]}"; do
-      # Item format is `|repo|fix command`
-      item="${item#|}"
       r="${item%%|*}"
       cmd="${item#*|}"
-      if [[ -n "$cmd" && "$r" != "$cmd" ]]; then
-        echo -e " - $r\n     ↳ Suggestion: $cmd"
-      else
-        echo " - $r"
-      fi
+      echo -e " - $r\n     ↳ Suggestion: $cmd"
     done
   fi
-  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]//|/ (} )")"; exit 1; fi
+
+  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then 
+    echo -e "\nFailed repos:"
+    for item in "${FAILED_REPOS[@]}"; do
+      r="${item%%|*}"
+      msg="${item#*|}"
+      echo -e " - $r\n     ↳ Error: $msg"
+    done
+    exit 1
+  fi
 else
   CREATED_REPOS=()
   while IFS= read -r line; do CREATED_REPOS+=("$line"); done < <(read_state "created.log")
@@ -677,6 +841,24 @@ else
 
   if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]//|/}")"; fi
   if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]//|/}")"; fi
-  if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then echo -e "\nSkipped repos:\n$(printf ' - %s\n' "${SKIPPED_REPOS[@]//|/ (} )")"; fi
-  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]//|/ (} )")"; exit 1; fi
+  if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then
+    echo -e "\nSkipped repos:"
+    for item in "${SKIPPED_REPOS[@]}"; do
+      echo " - ${item//|/ (})"
+    done
+  fi
+  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then 
+    echo -e "\nFailed repos:"
+    for item in "${FAILED_REPOS[@]}"; do
+      r="${item%%|*}"
+      msg="${item#*|}"
+      echo -e " - $r\n     ↳ Error: $msg"
+    done
+    exit 1
+  fi
+fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi

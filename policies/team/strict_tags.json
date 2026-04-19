@@ -1,5 +1,5 @@
 {
-  "name": "Team - Tag Strict",
+  "name": "team_tag_strict",
   "target": "tag",
   "enforcement": "active",
   "conditions": {
@@ -10,6 +10,7 @@
       "exclude": []
     }
   },
+  "bypass_actors": [],
   "rules": [
     {
       "type": "deletion"

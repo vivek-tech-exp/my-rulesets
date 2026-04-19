@@ -1,5 +1,5 @@
 {
-  "name": "Org - Tag Strict",
+  "name": "org_tag_strict",
   "target": "tag",
   "enforcement": "active",
   "conditions": {
