@@ -138,7 +138,7 @@ setup_state_dir() {
 record_state() {
   local state_type="$1"
   local text="$2"
-  printf '%s\n' "$text" >> "$STATE_DIR/${state_type}.log"
+  printf '|%s\n' "$text" >> "$STATE_DIR/${state_type}.log"
 }
 
 # --- Rate Limit Protection (Graceful Exit) ---

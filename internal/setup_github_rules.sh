@@ -316,7 +316,7 @@ fi
 process_repo() {
   local REPO="$1"
   
-  if grep -q -E "^${REPO}( |$)" "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,off_matrix,no_ruleset}.log 2>/dev/null; then
+  if grep -q -F "|${REPO}|" "$STATE_DIR"/{created,updated,skipped,failed,deleted,matched,off_matrix,no_ruleset}.log 2>/dev/null; then
     info "[$REPO] Already processed in a previous run. Resuming..."
     return 0
   fi
@@ -330,18 +330,18 @@ process_repo() {
     ERR_MSG="$(cat "$TMP_ERR")"
     if [[ "$ERR_MSG" == *"archived"* ]]; then
       warn "[$REPO] Skipped (Archived)"
-      record_state "skipped" "$REPO (archived)"
+      record_state "skipped" "$REPO|archived"
       return
     fi
     error "[$REPO] Failed to list rulesets: $ERR_MSG"
-    record_state "failed" "$REPO"
+    record_state "failed" "$REPO|"
     return
   fi
 
   if [[ "$AUDIT_MODE" == true ]]; then
     if [[ -z "$RULESET_LIST" || "$RULESET_LIST" == "[]" ]]; then
       echo -e "${BLUE}[$REPO] NO RULESET FOUND${NC}"
-      record_state "no_ruleset" "$REPO"
+      record_state "no_ruleset" "$REPO|"
       return
     fi
     
@@ -374,7 +374,7 @@ process_repo() {
     
     if [[ "$matched" == true ]]; then
       echo -e "${GREEN}[$REPO] MATCHED: $match_name${NC}"
-      record_state "matched" "$REPO ($match_name)"
+      record_state "matched" "$REPO|$match_name"
     else
       echo -e "${YELLOW}[$REPO] OFF-MATRIX / CUSTOM${NC}"
       
@@ -413,7 +413,7 @@ process_repo() {
 
     if [[ "$DRY_RUN" == true ]]; then
       warn "[$REPO] Would create ruleset"
-      record_state "skipped" "$REPO (dry-run:create)"
+      record_state "skipped" "$REPO|dry-run:create"
     else
       if with_retry "$TMP_ERR" gh api \
         --method POST \
@@ -422,15 +422,15 @@ process_repo() {
         "/repos/$OWNER/$REPO/rulesets" \
         --input - <<<"$CREATE_PAYLOAD" >/dev/null 2>"$TMP_ERR"; then
         success "[$REPO] Created ruleset"
-        record_state "created" "$REPO"
+        record_state "created" "$REPO|"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
           warn "[$REPO] Skipped (Archived)"
-          record_state "skipped" "$REPO (archived)"
+          record_state "skipped" "$REPO|archived"
         else
           error "[$REPO] Failed to create ruleset: $ERR_MSG"
-          record_state "failed" "$REPO"
+          record_state "failed" "$REPO|"
         fi
       fi
     fi
@@ -439,7 +439,7 @@ process_repo() {
 
   if ! LIVE_JSON="$(with_retry "$TMP_ERR" gh api "/repos/$OWNER/$REPO/rulesets/$RULESET_ID" 2>"$TMP_ERR")"; then
     error "[$REPO] Failed to fetch ruleset $RULESET_ID: $(cat "$TMP_ERR")"
-    record_state "failed" "$REPO"
+    record_state "failed" "$REPO|"
     return
   fi
 
@@ -447,7 +447,7 @@ process_repo() {
     BYPASS_COUNT="$(printf '%s' "$LIVE_JSON" | jq '.bypass_actors | length')"
     if [[ "$BYPASS_COUNT" -gt 0 ]]; then
       error "[$REPO] Has bypass actors configured, but --enforce-no-bypass was set."
-      record_state "failed" "$REPO (bypass enforced)"
+      record_state "failed" "$REPO|bypass enforced"
       return
     fi
   fi
@@ -473,7 +473,7 @@ process_repo() {
 
   if [[ "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" && "$FORCE_UPDATE" == false ]]; then
     success "[$REPO] Already matches desired state"
-    record_state "skipped" "$REPO"
+    record_state "skipped" "$REPO|"
   else
     if [[ "$FORCE_UPDATE" == true && "$LIVE_CANONICAL" == "$DESIRED_CANONICAL" ]]; then
        info "[$REPO] State identical, but proceeding due to --force"
@@ -488,7 +488,7 @@ process_repo() {
 
     if [[ "$DRY_RUN" == true ]]; then
       warn "[$REPO] Would update ruleset"
-      record_state "skipped" "$REPO (dry-run:update)"
+      record_state "skipped" "$REPO|dry-run:update"
     else
       if with_retry "$TMP_ERR" gh api \
         --method PUT \
@@ -502,15 +502,15 @@ process_repo() {
         else
           success "[$REPO] Updated ruleset"
         fi
-        record_state "updated" "$REPO"
+        record_state "updated" "$REPO|"
       else
         ERR_MSG="$(cat "$TMP_ERR")"
         if [[ "$ERR_MSG" == *"archived"* ]]; then
           warn "[$REPO] Skipped (Archived)"
-          record_state "skipped" "$REPO (archived)"
+          record_state "skipped" "$REPO|archived"
         else
           error "[$REPO] Failed to update ruleset: $ERR_MSG"
-          record_state "failed" "$REPO"
+          record_state "failed" "$REPO|"
         fi
       fi
     fi
@@ -536,7 +536,7 @@ for REPO in "${REPOS[@]}"; do
       for pid in "${pids[@]+"${pids[@]}"}"; do
         if ! wait "$pid"; then
           error "A background job (PID: $pid) crashed unexpectedly."
-          record_state "failed" "System Crash (PID: $pid)"
+          record_state "failed" "System Crash|PID: $pid"
         fi
       done
       pids=()
@@ -547,7 +547,7 @@ done
 for pid in "${pids[@]+"${pids[@]}"}"; do 
   if ! wait "$pid"; then
     error "A background job (PID: $pid) crashed unexpectedly."
-    record_state "failed" "System Crash (PID: $pid)"
+    record_state "failed" "System Crash|PID: $pid"
   fi
 done
 
@@ -555,7 +555,9 @@ read_state() {
   local file="$STATE_DIR/$1"
   if [[ -f "$file" ]]; then
     while IFS= read -r line; do
-      [[ -n "$line" ]] && echo "$line"
+      if [[ -n "$line" ]]; then
+        echo "${line#|}"
+      fi
     done < "$file"
   fi
 }
@@ -579,10 +581,13 @@ if [[ "$AUDIT_MODE" == true ]]; then
   echo "Skipped:    ${#SKIPPED_REPOS[@]}"
   echo "Failed:     ${#FAILED_REPOS[@]}"
   
-  if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched repos:\n$(printf ' - %s\n' "${MATCHED_REPOS[@]}")"; fi
+  if [[ ${#MATCHED_REPOS[@]} -gt 0 ]]; then echo -e "\nMatched repos:\n$(printf ' - %s\n' "${MATCHED_REPOS[@]//|/ (} )")"; fi
   if [[ ${#OFF_MATRIX_REPOS[@]} -gt 0 ]]; then
     echo -e "\nOff-Matrix repos (Action Required):"
     for item in "${OFF_MATRIX_REPOS[@]}"; do
+      # Item format is `|repo|fix command`
+      # Strip leading `|`
+      item="${item#|}"
       r="${item%%|*}"
       cmd="${item#*|}"
       if [[ "$r" != "$cmd" ]]; then
@@ -592,8 +597,8 @@ if [[ "$AUDIT_MODE" == true ]]; then
       fi
     done
   fi
-  if [[ ${#NO_RULESET_REPOS[@]} -gt 0 ]]; then echo -e "\nNo Ruleset repos:\n$(printf ' - %s\n' "${NO_RULESET_REPOS[@]}")"; fi
-  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]}")"; exit 1; fi
+  if [[ ${#NO_RULESET_REPOS[@]} -gt 0 ]]; then echo -e "\nNo Ruleset repos:\n$(printf ' - %s\n' "${NO_RULESET_REPOS[@]//|/}")"; fi
+  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]//|/ (} )")"; exit 1; fi
 else
   CREATED_REPOS=()
   while IFS= read -r line; do CREATED_REPOS+=("$line"); done < <(read_state "created.log")
@@ -610,8 +615,8 @@ else
   echo "Skipped: ${#SKIPPED_REPOS[@]}"
   echo "Failed:  ${#FAILED_REPOS[@]}"
 
-  if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]}")"; fi
-  if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]}")"; fi
-  if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then echo -e "\nSkipped repos:\n$(printf ' - %s\n' "${SKIPPED_REPOS[@]}")"; fi
-  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]}")"; exit 1; fi
+  if [[ ${#CREATED_REPOS[@]} -gt 0 ]]; then echo -e "\nCreated repos:\n$(printf ' - %s\n' "${CREATED_REPOS[@]//|/}")"; fi
+  if [[ ${#UPDATED_REPOS[@]} -gt 0 ]]; then echo -e "\nUpdated repos:\n$(printf ' - %s\n' "${UPDATED_REPOS[@]//|/}")"; fi
+  if [[ ${#SKIPPED_REPOS[@]} -gt 0 ]]; then echo -e "\nSkipped repos:\n$(printf ' - %s\n' "${SKIPPED_REPOS[@]//|/ (} )")"; fi
+  if [[ ${#FAILED_REPOS[@]} -gt 0 ]]; then echo -e "\nFailed repos:\n$(printf ' - %s\n' "${FAILED_REPOS[@]//|/ (} )")"; exit 1; fi
 fi
