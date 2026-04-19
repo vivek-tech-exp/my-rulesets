@@ -1,4 +1,6 @@
-# System Architecture & Technical Specifications
+# Internal Architecture Notes
+
+This file is for maintainers working on the implementation. Reader-facing usage, plays, commands, and CI setup now live in `README.md`.
 
 The `ruleset-sync` tool is engineered for safety, idempotency, and scalability at an enterprise level. It strictly separates policy definitions from execution routing.
 
