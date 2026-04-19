@@ -35,8 +35,8 @@ Off-Matrix: 2
 Failed:     0
 
 Off-Matrix repos (Action Required):
- - legacy-auth-service
-     ↳ Fix: gh ruleset-sync sync --config policies/org/strict.json --repo legacy-auth-service
+ - core-auth-service
+     ↳ Fix: gh ruleset-sync sync --config policies/org/strict.json --repo core-auth-service
  - experiments-repo
      ↳ Fix: gh ruleset-sync capture "Custom Override" --repo experiments-repo
 ```
@@ -45,10 +45,10 @@ Off-Matrix repos (Action Required):
 
 ```bash
 # Instantly push the strict organizational template to the disconnected repository
-$ gh ruleset-sync sync --org --strict --repo legacy-auth-service
+$ gh ruleset-sync sync --org --strict --repo core-auth-service
 
-[legacy-auth-service] Processing...
-[legacy-auth-service] Updated ruleset
+[core-auth-service] Processing...
+[core-auth-service] Updated ruleset
 ✅ Run summary: 1 Updated, 0 Failed
 ```
 
