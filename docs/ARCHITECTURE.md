@@ -31,8 +31,12 @@ Running aggressive mutative requests introduces the risk of triggering GitHub's 
 ## 🛡️ Resilience Engineering
 
 ### 1. Checkpoint State Management
-Every operation builds lightweight `.gh_state_*` directories dynamically. If a process drops, breaks, or gets rate-limited, running the exact same command will flawlessly read the state and immediately resume where it left off, bypassing already-processed entities. 
+Every operation builds lightweight state logs dynamically. If a process drops, breaks, or gets rate-limited, running the exact same command will read the session state and resume where it left off. 
 
+State is stored in centralized, XDG-compliant directories:
+`~/.config/gh-ruleset-sync/state/${OWNER}/${script_name}/`
+
+This structure ensures that multiple owners (orgs/users) and different operations (`sync` vs `audit` vs `nuke`) have isolated state and rollback history.
 ### 2. Auto-Retry Backoff Wrappers
 All direct GitHub API calls (`gh api`) are executed via a `with_retry` wrapper. 
 - Transient 502/503 errors and secondary rate limits trigger an **exponential backoff delay** (2s -> 4s -> 8s) up to 3 attempts.
@@ -44,7 +48,6 @@ The engine natively catches API errors indicating a repository was archived or d
 ---
 
 ## 🔄 State Evaluation & Canonicalization
-
 To minimize API calls (and bloated Audit Logs on GitHub), `setup_github_rules.sh` strictly utilizes Canonicalization Checks.
 
 1. Live JSON is polled for the target repository via a GET request.
