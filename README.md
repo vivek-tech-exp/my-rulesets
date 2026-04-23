@@ -104,8 +104,8 @@ The JSON files in `policies/` are the source of truth. Some loose and moderate t
 
 | Tier | `--individual` | `--team` | `--org` |
 | :--- | :--- | :--- | :--- |
-| **`--loose`** | Blocks branch deletion and force-pushes on the default branch. | Blocks deletion and force-pushes; requires 1 PR approval with resolved review threads. | Same as team loose, plus signed commits. |
-| **`--moderate`** | Same as individual loose today: blocks deletion and force-pushes on the default branch. | Same as team loose today: blocks deletion and force-pushes; requires 1 PR approval with resolved review threads. | Blocks deletion and force-pushes; requires signed commits and 2 PR approvals with resolved review threads. |
+| **`--loose`** | **Evaluate Mode**: Monitors and logs deletions and force-pushes without blocking them. | **Evaluate Mode**: Monitors and logs deletions, force-pushes, and PR requirements. | **Evaluate Mode**: Monitors and logs deletions, force-pushes, signed commits, and PR requirements. |
+| **`--moderate`** | Blocks branch deletion and force-pushes on the default branch. | Blocks deletion and force-pushes; requires 1 PR approval with resolved review threads. | Blocks deletion and force-pushes; requires signed commits and 2 PR approvals with resolved review threads. |
 | **`--strict`** | Adds signed commits and explicitly enforces zero bypass actors. | Requires signed commits, 2 PR approvals, resolved review threads, and zero bypass actors. | Requires signed commits, 2 PR approvals, code owner review, resolved review threads, and zero bypass actors. |
 
 Append `--tags` to any Smart Matrix command to target tag rulesets instead of branch rulesets.
@@ -201,9 +201,9 @@ gh ruleset-sync nuke --name "Testing" --all --owner your-org --yes --parallel 2
 gh ruleset-sync sync --owner your-org --rollback --yes
 ```
 
-**The Impact:** This reads the last sync session state from `~/.config/gh-ruleset-sync/state/your-org/setup_github_rules/`, loads the backup JSON captured before each update, and restores the previous rulesets with `PUT` requests. That is the right move because rollback uses the exact backed-up live configuration from the last session instead of guessing what "working" used to be.
+**The Impact:** This is a **session-aware reversal**. It reads the state from the *last completed run* for that specific owner (located in `~/.config/gh-ruleset-sync/state/`). It restores all rulesets that were updated to their previous configurations and deletes any new rulesets created during that session. This is the fastest way to resume a working state after a fleet-wide deployment error.
 
-**Pro-Tip:** If the bad operation was a delete run instead of a sync run, use `gh ruleset-sync nuke --owner your-org --rollback --yes`.
+**Pro-Tip:** Rollback is all-or-nothing for the session. If you only need to fix one repo, use a targeted `sync` command with `--repo` instead. If the bad operation was a delete run instead of a sync run, use `gh ruleset-sync nuke --owner your-org --rollback --yes`.
 
 ## Chapter 4: Scaling the Standard (Governance for Teams)
 
@@ -303,6 +303,9 @@ gh ruleset-sync nuke --repo my-test-repo --owner your-org --yes
 | `--include-archived` | Include archived repositories | `false` |
 | `--parallel <N>` | Process repositories concurrently | `1` |
 | `--dry-run` | Show actions without making mutations | `false` |
+| `--debug-diff` | Print canonical JSON diff between desired and live state | `false` |
+| `--enforce-no-bypass` | Fail if the existing ruleset has bypass actors | `false` |
+| `--remove-bypass` | Wipe existing bypass actors during sync | `false` |
 | `--yes` | Skip confirmation prompts | `false` |
 | `--quiet` | Reduce non-essential output | `false` |
 | `--rollback` | Undo the last sync or delete session for the current owner | `false` |
